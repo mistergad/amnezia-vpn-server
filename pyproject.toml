@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amnezia-service"
+version = "0.1.0"
+description = "Billing and access control panel for a self-hosted AmneziaWG service"
+requires-python = ">=3.12"
+dependencies = [
+  "cryptography>=44.0,<46.0",
+  "fastapi>=0.115,<1.0",
+  "httpx>=0.28,<1.0",
+  "itsdangerous>=2.2,<3.0",
+  "jinja2>=3.1,<4.0",
+  "psycopg[binary]>=3.2,<4.0",
+  "pydantic-settings>=2.7,<3.0",
+  "python-multipart>=0.0.20,<1.0",
+  "qrcode[pil]>=8.0,<9.0",
+  "sqlalchemy>=2.0,<3.0",
+  "uvicorn[standard]>=0.34,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-cov>=6.0,<7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

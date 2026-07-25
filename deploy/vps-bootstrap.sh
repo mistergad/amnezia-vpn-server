@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# One-command deployment for a dedicated Ubuntu 24.04 VPS.
+# The AWG2 container itself is built and configured by pinned upstream scripts
+# from amnezia-vpn/amnezia-client; see vendor/amnezia-client/UPSTREAM.md.
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+readonly VENDOR_DIR="$SCRIPT_DIR/vendor/amnezia-client"
+readonly APP_DIR="/opt/amnezia-service"
+readonly APP_USER="amnezia-service"
+readonly ENV_FILE="/etc/amnezia-service.env"
+readonly CREDENTIALS_FILE="/root/amnezia-service-credentials.txt"
+readonly CONTAINER_NAME="amnezia-awg2"
+readonly AWG_BUILD_DIR="/opt/amnezia/amnezia-awg2"
+readonly GENERATED_DIR="/opt/amnezia/deploy-generated"
+readonly AWG_SUBNET_IP="10.8.1.0"
+readonly AWG_SUBNET_CIDR="24"
+readonly SPECIAL_JUNK_1='<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>'
+
+DOMAIN="${DOMAIN:-}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+AWG_PORT="${AWG_PORT:-55424}"
+
+log() { printf '\n==> %s\n' "$*"; }
+warn() { printf '\nWARNING: %s\n' "$*" >&2; }
+die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo bash deploy/vps-bootstrap.sh --domain vpn.example.com [options]
+
+Required:
+  --domain DOMAIN              DNS name whose A/AAAA record points to this VPS
+
+Options:
+  --admin-email EMAIL          Initial administrator (default: admin@DOMAIN)
+  --admin-password PASSWORD    At least 12 safe ASCII characters; generated if omitted
+  --awg-port PORT              Public AWG2 UDP port (default: 55424)
+  -h, --help                   Show this help
+
+The script targets a dedicated Ubuntu 24.04 server. It installs Docker,
+PostgreSQL, Caddy, AWG2 and the control panel. Re-running it is supported.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
+    --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
+    --awg-port) AWG_PORT="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown argument: $1" ;;
+  esac
+done
+
+[[ "${EUID}" -eq 0 ]] || die "Run this script as root (sudo)."
+[[ -r /etc/os-release ]] || die "Cannot identify the operating system."
+# shellcheck disable=SC1091
+source /etc/os-release
+[[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "24.04" ]] || \
+  die "Ubuntu 24.04 is required (found ${PRETTY_NAME:-unknown})."
+[[ -n "$DOMAIN" ]] || die "--domain is required."
+[[ "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] || \
+  die "Invalid domain: $DOMAIN"
+[[ "$AWG_PORT" =~ ^[0-9]+$ ]] && ((AWG_PORT >= 1024 && AWG_PORT <= 65535)) || \
+  die "--awg-port must be between 1024 and 65535."
+
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$DOMAIN}"
+[[ "$ADMIN_EMAIL" =~ ^[A-Za-z0-9.!#$%\&\'*+/=?^_\`{|}~-]+@[A-Za-z0-9.-]+$ ]] || \
+  die "Invalid administrator email."
+if [[ -n "$ADMIN_PASSWORD" ]]; then
+  [[ "$ADMIN_PASSWORD" =~ ^[A-Za-z0-9._~!@%+=:-]{12,128}$ ]] || \
+    die "Admin password must contain 12-128 safe ASCII characters."
+fi
+
+for required_file in \
+  "$VENDOR_DIR/awg2/Dockerfile" \
+  "$VENDOR_DIR/awg2/configure_container.sh" \
+  "$VENDOR_DIR/awg2/run_container.sh" \
+  "$VENDOR_DIR/awg2/start.sh" \
+  "$VENDOR_DIR/build_container.sh" \
+  "$VENDOR_DIR/prepare_host.sh" \
+  "$VENDOR_DIR/LICENSE"; do
+  [[ -f "$required_file" ]] || die "Missing vendored upstream file: $required_file"
+done
+
+umask 077
+export DEBIAN_FRONTEND=noninteractive
+
+read_env_value() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
+log "Installing operating-system packages"
+apt-get update
+apt-get install -y \
+  apt-transport-https ca-certificates curl debian-archive-keyring debian-keyring \
+  docker.io gettext-base gnupg openssl postgresql postgresql-contrib \
+  python3 python3-pip python3-venv sudo ufw
+systemctl enable --now docker postgresql
+
+if ! command -v caddy >/dev/null 2>&1; then
+  log "Installing Caddy from its official stable repository"
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+    | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+    -o /etc/apt/sources.list.d/caddy-stable.list
+  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  chmod o+r /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update
+  apt-get install -y caddy
+fi
+
+rand_between() {
+  local minimum="$1" maximum="$2"
+  printf '%s\n' $((minimum + $(od -An -N4 -tu4 /dev/urandom) % (maximum - minimum + 1)))
+}
+
+generate_awg_parameters() {
+  JUNK_PACKET_COUNT="$(rand_between 4 6)"
+  JUNK_PACKET_MIN_SIZE="10"
+  JUNK_PACKET_MAX_SIZE="50"
+  INIT_PACKET_JUNK_SIZE="$(rand_between 15 149)"
+  RESPONSE_PACKET_JUNK_SIZE="$(rand_between 15 149)"
+  while ((148 + INIT_PACKET_JUNK_SIZE == 92 + RESPONSE_PACKET_JUNK_SIZE)); do
+    RESPONSE_PACKET_JUNK_SIZE="$(rand_between 15 149)"
+  done
+  COOKIE_REPLY_PACKET_JUNK_SIZE="$(rand_between 0 63)"
+  while ((64 + COOKIE_REPLY_PACKET_JUNK_SIZE == 148 + INIT_PACKET_JUNK_SIZE \
+      || 64 + COOKIE_REPLY_PACKET_JUNK_SIZE == 92 + RESPONSE_PACKET_JUNK_SIZE)); do
+    COOKIE_REPLY_PACKET_JUNK_SIZE="$(rand_between 0 63)"
+  done
+  TRANSPORT_PACKET_JUNK_SIZE="$(rand_between 0 19)"
+  while ((32 + TRANSPORT_PACKET_JUNK_SIZE == 148 + INIT_PACKET_JUNK_SIZE \
+      || 32 + TRANSPORT_PACKET_JUNK_SIZE == 92 + RESPONSE_PACKET_JUNK_SIZE \
+      || 32 + TRANSPORT_PACKET_JUNK_SIZE == 64 + COOKIE_REPLY_PACKET_JUNK_SIZE)); do
+    TRANSPORT_PACKET_JUNK_SIZE="$(rand_between 0 19)"
+  done
+  INIT_PACKET_MAGIC_HEADER="$(rand_between 1 536870911)"
+  RESPONSE_PACKET_MAGIC_HEADER="$(rand_between 536870912 1073741823)"
+  UNDERLOAD_PACKET_MAGIC_HEADER="$(rand_between 1073741824 1610612735)"
+  TRANSPORT_PACKET_MAGIC_HEADER="$(rand_between 1610612736 2147483646)"
+}
+
+wait_for_awg() {
+  local attempt
+  for attempt in {1..30}; do
+    if docker exec "$CONTAINER_NAME" awg show awg0 >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+  log "Reusing the existing $CONTAINER_NAME container without replacing its peers"
+  docker start "$CONTAINER_NAME" >/dev/null || true
+  wait_for_awg || die "Existing $CONTAINER_NAME does not expose a working awg0 interface."
+  detected_port="$(docker exec "$CONTAINER_NAME" awg show awg0 listen-port | tr -d '\r\n')"
+  if [[ "$detected_port" =~ ^[0-9]+$ && "$detected_port" != "$AWG_PORT" ]]; then
+    warn "Existing AWG2 listens on UDP $detected_port; using it instead of $AWG_PORT."
+    AWG_PORT="$detected_port"
+  fi
+else
+  log "Building AWG2 with pinned official AmneziaVPN server scripts"
+  generate_awg_parameters
+  install -d -m 0755 "$AWG_BUILD_DIR" "$GENERATED_DIR"
+  install -m 0644 "$VENDOR_DIR/awg2/Dockerfile" "$AWG_BUILD_DIR/Dockerfile"
+
+  DOCKERFILE_FOLDER="$AWG_BUILD_DIR" bash "$VENDOR_DIR/prepare_host.sh"
+  CONTAINER_NAME="$CONTAINER_NAME" DOCKERFILE_FOLDER="$AWG_BUILD_DIR" \
+    bash "$VENDOR_DIR/build_container.sh"
+
+  CONTAINER_NAME="$CONTAINER_NAME" AWG_SERVER_PORT="$AWG_PORT" \
+    bash "$VENDOR_DIR/awg2/run_container.sh"
+
+  export AWG_SUBNET_IP AWG_SUBNET_CIDR AWG_PORT
+  export WIREGUARD_SUBNET_CIDR="$AWG_SUBNET_CIDR"
+  export AWG_SERVER_PORT="$AWG_PORT"
+  export JUNK_PACKET_COUNT JUNK_PACKET_MIN_SIZE JUNK_PACKET_MAX_SIZE
+  export INIT_PACKET_JUNK_SIZE RESPONSE_PACKET_JUNK_SIZE
+  export COOKIE_REPLY_PACKET_JUNK_SIZE TRANSPORT_PACKET_JUNK_SIZE
+  export INIT_PACKET_MAGIC_HEADER RESPONSE_PACKET_MAGIC_HEADER
+  export UNDERLOAD_PACKET_MAGIC_HEADER TRANSPORT_PACKET_MAGIC_HEADER SPECIAL_JUNK_1
+
+  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_SERVER_PORT} ${JUNK_PACKET_COUNT} ${JUNK_PACKET_MIN_SIZE} ${JUNK_PACKET_MAX_SIZE} ${INIT_PACKET_JUNK_SIZE} ${RESPONSE_PACKET_JUNK_SIZE} ${COOKIE_REPLY_PACKET_JUNK_SIZE} ${TRANSPORT_PACKET_JUNK_SIZE} ${INIT_PACKET_MAGIC_HEADER} ${RESPONSE_PACKET_MAGIC_HEADER} ${UNDERLOAD_PACKET_MAGIC_HEADER} ${TRANSPORT_PACKET_MAGIC_HEADER} ${SPECIAL_JUNK_1}' \
+    < "$VENDOR_DIR/awg2/configure_container.sh" \
+    > "$GENERATED_DIR/configure_container.sh"
+  sed -i 's/^# I1 =/I1 =/' "$GENERATED_DIR/configure_container.sh"
+  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR}' \
+    < "$VENDOR_DIR/awg2/start.sh" \
+    > "$GENERATED_DIR/start.sh"
+  chmod 0755 "$GENERATED_DIR/configure_container.sh" "$GENERATED_DIR/start.sh"
+
+  docker cp "$GENERATED_DIR/configure_container.sh" \
+    "$CONTAINER_NAME:/opt/amnezia/configure_container.sh"
+  docker exec "$CONTAINER_NAME" bash /opt/amnezia/configure_container.sh
+  docker cp "$GENERATED_DIR/start.sh" "$CONTAINER_NAME:/opt/amnezia/start.sh"
+  docker exec "$CONTAINER_NAME" chmod 0755 /opt/amnezia/start.sh
+  docker restart "$CONTAINER_NAME" >/dev/null
+  wait_for_awg || die "AWG2 failed to start; inspect: docker logs $CONTAINER_NAME"
+fi
+
+DOCKER_BIN="$(command -v docker)"
+AWG_BIN="$(docker exec "$CONTAINER_NAME" sh -lc 'command -v awg' | tr -d '\r\n')"
+AWG_QUICK_BIN="$(docker exec "$CONTAINER_NAME" sh -lc 'command -v awg-quick' | tr -d '\r\n')"
+[[ -n "$DOCKER_BIN" && -n "$AWG_BIN" && -n "$AWG_QUICK_BIN" ]] || \
+  die "Cannot determine Docker/AWG2 binary paths."
+
+read_live_interface_value() {
+  local name="$1"
+  docker exec "$CONTAINER_NAME" awg showconf awg0 \
+    | sed -n "s/^[[:space:]]*${name}[[:space:]]*=[[:space:]]*//p" \
+    | head -n 1
+}
+AWG_I1_VALUE="$(read_live_interface_value I1)"
+AWG_I2_VALUE="$(read_live_interface_value I2)"
+AWG_I3_VALUE="$(read_live_interface_value I3)"
+AWG_I4_VALUE="$(read_live_interface_value I4)"
+AWG_I5_VALUE="$(read_live_interface_value I5)"
+
+log "Preparing PostgreSQL and application secrets"
+DB_PASSWORD="$(read_env_value DEPLOY_DB_PASSWORD)"
+SECRET_KEY="$(read_env_value SECRET_KEY)"
+ENCRYPTION_KEY="$(read_env_value ENCRYPTION_KEY)"
+if [[ -z "$ADMIN_PASSWORD" ]]; then
+  ADMIN_PASSWORD="$(read_env_value ADMIN_PASSWORD)"
+fi
+DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
+SECRET_KEY="${SECRET_KEY:-$(openssl rand -hex 32)}"
+ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)}"
+PAYMENT_PROVIDER_VALUE="$(read_env_value PAYMENT_PROVIDER)"
+YOOKASSA_SHOP_ID_VALUE="$(read_env_value YOOKASSA_SHOP_ID)"
+YOOKASSA_SECRET_KEY_VALUE="$(read_env_value YOOKASSA_SECRET_KEY)"
+PAYMENT_PROVIDER_VALUE="${PAYMENT_PROVIDER_VALUE:-mock}"
+if [[ "$PAYMENT_PROVIDER_VALUE" == "yookassa" ]] && \
+   [[ -z "$YOOKASSA_SHOP_ID_VALUE" || -z "$YOOKASSA_SECRET_KEY_VALUE" ]]; then
+  die "Existing YooKassa configuration is incomplete in $ENV_FILE."
+fi
+
+if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='amnezia'" | grep -q 1; then
+  runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
+    -c "CREATE ROLE amnezia LOGIN PASSWORD '$DB_PASSWORD'"
+else
+  runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
+    -c "ALTER ROLE amnezia WITH LOGIN PASSWORD '$DB_PASSWORD'"
+fi
+if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='amnezia'" | grep -q 1; then
+  runuser -u postgres -- createdb --owner=amnezia amnezia
+fi
+
+if ! id "$APP_USER" >/dev/null 2>&1; then
+  useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
+fi
+install -d -o "$APP_USER" -g "$APP_USER" -m 0750 "$APP_DIR" "$APP_DIR/app"
+cp -a "$PROJECT_DIR/app/." "$APP_DIR/app/"
+install -o "$APP_USER" -g "$APP_USER" -m 0644 "$PROJECT_DIR/pyproject.toml" "$APP_DIR/pyproject.toml"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/app"
+
+if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
+  runuser -u "$APP_USER" -- python3 -m venv "$APP_DIR/.venv"
+fi
+runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
+runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/python" -m pip install "$APP_DIR"
+
+log "Writing production configuration and least-privilege service permissions"
+cat > "$ENV_FILE.new" <<EOF
+APP_NAME=Amnezia Service
+ENVIRONMENT=production
+BASE_URL=https://$DOMAIN
+SECRET_KEY=$SECRET_KEY
+ENCRYPTION_KEY=$ENCRYPTION_KEY
+DATABASE_URL=postgresql+psycopg://amnezia:$DB_PASSWORD@127.0.0.1:5432/amnezia
+DEPLOY_DB_PASSWORD=$DB_PASSWORD
+TRUSTED_HOSTS=["$DOMAIN"]
+ADMIN_EMAIL=$ADMIN_EMAIL
+ADMIN_PASSWORD=$ADMIN_PASSWORD
+SESSION_HTTPS_ONLY=true
+PAYMENT_PROVIDER=$PAYMENT_PROVIDER_VALUE
+YOOKASSA_SHOP_ID=$YOOKASSA_SHOP_ID_VALUE
+YOOKASSA_SECRET_KEY=$YOOKASSA_SECRET_KEY_VALUE
+VPN_BACKEND=native
+AWG_INTERFACE=awg0
+AWG_ENDPOINT=$DOMAIN:$AWG_PORT
+AWG_SUBNET=$AWG_SUBNET_IP/$AWG_SUBNET_CIDR
+AWG_DNS=1.1.1.1,1.0.0.1
+AWG_COMMAND_PREFIX=["sudo","-n","$DOCKER_BIN","exec","-i","$CONTAINER_NAME"]
+AWG_BINARY=$AWG_BIN
+AWG_QUICK_BINARY=$AWG_QUICK_BIN
+AWG_CONFIG_PATH=/opt/amnezia/awg/awg0.conf
+AWG_SAVE_CONFIG=true
+AWG_I1=$AWG_I1_VALUE
+AWG_I2=$AWG_I2_VALUE
+AWG_I3=$AWG_I3_VALUE
+AWG_I4=$AWG_I4_VALUE
+AWG_I5=$AWG_I5_VALUE
+SUBSCRIPTION_RECONCILE_SECONDS=60
+MAX_DEVICES_PER_SUBSCRIPTION=20
+EOF
+install -o root -g "$APP_USER" -m 0640 "$ENV_FILE.new" "$ENV_FILE"
+rm -f "$ENV_FILE.new"
+
+cat > /etc/sudoers.d/amnezia-service <<EOF
+Cmnd_Alias AMNEZIA_SERVICE_PEERS = $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_BIN *, \\
+                                    $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_QUICK_BIN save /opt/amnezia/awg/awg0.conf
+$APP_USER ALL=(root) NOPASSWD: AMNEZIA_SERVICE_PEERS
+EOF
+chmod 0440 /etc/sudoers.d/amnezia-service
+visudo -cf /etc/sudoers.d/amnezia-service >/dev/null
+
+install -o root -g root -m 0644 "$SCRIPT_DIR/amnezia-service.service" \
+  /etc/systemd/system/amnezia-service.service
+systemctl daemon-reload
+systemctl enable --now amnezia-service
+systemctl restart amnezia-service
+
+log "Configuring Caddy HTTPS reverse proxy"
+install -d -o root -g caddy -m 0750 /etc/caddy/sites-enabled
+cat > /etc/caddy/sites-enabled/amnezia-service.caddy <<EOF
+$DOMAIN {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8000
+}
+EOF
+chmod 0644 /etc/caddy/sites-enabled/amnezia-service.caddy
+if ! grep -Fq 'import /etc/caddy/sites-enabled/*.caddy' /etc/caddy/Caddyfile; then
+  cp -a /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.before-amnezia.$(date +%Y%m%d%H%M%S)"
+  printf '\nimport /etc/caddy/sites-enabled/*.caddy\n' >> /etc/caddy/Caddyfile
+fi
+caddy fmt --overwrite /etc/caddy/sites-enabled/amnezia-service.caddy
+caddy validate --config /etc/caddy/Caddyfile
+systemctl enable --now caddy
+systemctl reload caddy
+
+if ufw status 2>/dev/null | grep -q '^Status: active'; then
+  log "Updating the active UFW policy"
+  SSH_PORT="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
+  ufw allow "${SSH_PORT:-22}/tcp" comment 'SSH' >/dev/null
+  ufw allow 80/tcp comment 'Caddy HTTP' >/dev/null
+  ufw allow 443/tcp comment 'Caddy HTTPS' >/dev/null
+  ufw allow "$AWG_PORT/udp" comment 'AmneziaWG2' >/dev/null
+else
+  warn "UFW is inactive; it was not enabled automatically. Open TCP 80/443 and UDP $AWG_PORT in the VPS firewall/security group."
+fi
+
+for attempt in {1..30}; do
+  if curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null; then
+    break
+  fi
+  if ((attempt == 30)); then
+    journalctl -u amnezia-service --no-pager -n 80 >&2 || true
+    die "The control panel did not pass its local health check."
+  fi
+  sleep 1
+done
+
+cat > "$CREDENTIALS_FILE" <<EOF
+URL: https://$DOMAIN/admin
+Admin email: $ADMIN_EMAIL
+Admin password: $ADMIN_PASSWORD
+AWG2 endpoint: $DOMAIN:$AWG_PORT/udp
+Environment: $ENV_FILE
+EOF
+chmod 0600 "$CREDENTIALS_FILE"
+
+if ! getent ahostsv4 "$DOMAIN" >/dev/null 2>&1; then
+  warn "$DOMAIN does not resolve to IPv4 yet. Caddy will issue HTTPS after DNS and TCP 80/443 are reachable."
+fi
+
+log "Deployment completed"
+printf 'Admin:       https://%s/admin\n' "$DOMAIN"
+printf 'Credentials: %s (root-only)\n' "$CREDENTIALS_FILE"
+printf 'AWG2:        %s:%s/udp\n' "$DOMAIN" "$AWG_PORT"
+printf 'Status:      systemctl status amnezia-service caddy\n'

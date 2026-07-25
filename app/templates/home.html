@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero shell">
+  <div class="eyebrow"><span class="pulse"></span> Собственная VPN-инфраструктура</div>
+  <h1>Интернет без<br><span>лишних границ.</span></h1>
+  <p class="lead">100 ₽ дают 30 дней одному устройству. Просто добавляйте новые ключи — расход баланса пересчитается автоматически.</p>
+  <div class="hero-actions">
+    <a class="button" href="/register">Создать аккаунт</a>
+    <a class="ghost-button" href="#plans">Посмотреть стоимость</a>
+  </div>
+  <div class="trust-row">
+    <span>● Совместимо с AmneziaVPN</span>
+    <span>● Любое количество устройств</span>
+    <span>● Конфигурация зашифрована</span>
+  </div>
+</section>
+
+<section class="shell feature-grid">
+  <article class="feature-card accent-card">
+    <span class="feature-number">01</span>
+    <h3>Оплатите</h3>
+    <p>Безопасная платежная страница провайдера. Карточные данные не попадают на VPN-сервис.</p>
+  </article>
+  <article class="feature-card">
+    <span class="feature-number">02</span>
+    <h3>Получите ключ</h3>
+    <p>Пополните единый баланс. Каждые 100 ₽ — это 30 дней работы одного устройства.</p>
+  </article>
+  <article class="feature-card">
+    <span class="feature-number">03</span>
+    <h3>Подключитесь</h3>
+    <p>Добавляйте или отзывайте ключи. При двух активных устройствах баланс расходуется вдвое, при пяти — впятеро быстрее.</p>
+  </article>
+</section>
+
+<section id="plans" class="shell plans-section">
+  <div class="section-heading">
+    <div><span class="eyebrow">Баланс</span><h2>100 ₽ × устройство</h2></div>
+    <p>Расчетный период — ровно 30 дней.</p>
+  </div>
+  <div class="plans-grid">
+    {% for devices in [1, 3, 5] %}
+    <article class="plan-card {{ 'recommended' if devices == 3 else '' }}">
+      {% if devices == 3 %}<span class="badge">Пример</span>{% endif %}
+      <h3>Активных: {{ devices }}</h3>
+      <div class="price">{{ devices * price_per_device }} ₽</div>
+      <p>за 30 дней · считается автоматически</p>
+      <a class="{{ 'button' if devices == 3 else 'ghost-button' }} full" href="/register">Выбрать</a>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

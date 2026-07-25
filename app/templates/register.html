@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Регистрация — {{ app_name }}{% endblock %}
+{% block content %}
+<section class="auth-wrap shell">
+  <div class="auth-copy">
+    <span class="eyebrow">Новый аккаунт</span>
+    <h1>Два шага<br>до свободы.</h1>
+    <p>Создайте аккаунт, пополните баланс и выберите количество устройств — первый ключ появится сразу после оплаты.</p>
+  </div>
+  <form class="auth-card" method="post" action="/register">
+    <h2>Регистрация</h2>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Email<input type="email" name="email" autocomplete="email" required></label>
+    <label>Пароль <small>минимум 10 символов</small><input type="password" name="password" minlength="10" autocomplete="new-password" required></label>
+    <button class="button full" type="submit">Создать аккаунт</button>
+    <p class="form-foot">Уже зарегистрированы? <a href="/login">Войти</a></p>
+  </form>
+</section>
+{% endblock %}

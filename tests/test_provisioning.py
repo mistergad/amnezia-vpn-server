@@ -1,0 +1,118 @@
+from app.config import Settings
+from datetime import timezone
+
+from app.services.provisioning import MockProvisioner, NativeAmneziaWGProvisioner
+
+
+def test_mock_provisioner_issues_importable_config() -> None:
+    provisioner = MockProvisioner(
+        Settings(awg_endpoint="203.0.113.4:51820", awg_dns="1.1.1.1")
+    )
+    issued = provisioner.provision("10.8.1.2")
+    assert "[Interface]" in issued.config
+    assert "Address = 10.8.1.2/32" in issued.config
+    assert "Jc = 4" in issued.config
+    assert "[Peer]" in issued.config
+    assert "Endpoint = 203.0.113.4:51820" in issued.config
+    assert issued.public_key in provisioner.stats()
+    assert provisioner.assigned_ips() == {"10.8.1.2"}
+    provisioner.revoke(issued.public_key)
+    assert issued.public_key not in provisioner.stats()
+    assert provisioner.assigned_ips() == set()
+
+
+def test_native_provisioner_reads_live_amnezia_parameters(tmp_path) -> None:
+    class FakeNativeProvisioner(NativeAmneziaWGProvisioner):
+        def __init__(self, settings: Settings):
+            super().__init__(settings)
+            self.calls: list[tuple[list[str], str | None, str | None]] = []
+
+        def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
+            self.calls.append((args, input_text, binary))
+            if args == ["genkey"]:
+                return "client-private"
+            if args == ["pubkey"]:
+                return "client-public"
+            if args == ["genpsk"]:
+                return "client-psk"
+            if args[-1:] == ["public-key"]:
+                return "server-public"
+            if args[:1] == ["showconf"]:
+                return """[Interface]
+Jc = 4
+Jmin = 40
+Jmax = 70
+S1 = 10
+S2 = 20
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+"""
+            return ""
+
+    settings = Settings(
+        vpn_backend="native",
+        awg_config_path=tmp_path / "not-mounted.conf",
+        awg_endpoint="vpn.example.test:443",
+        awg_save_config=False,
+        awg_i1="<r 2><b 0x0102>",
+    )
+    provisioner = FakeNativeProvisioner(settings)
+    issued = provisioner.provision("10.8.1.9")
+    assert issued.public_key == "client-public"
+    assert "PrivateKey = client-private" in issued.config
+    assert "Jmin = 40" in issued.config
+    assert "I1 = <r 2><b 0x0102>" in issued.config
+    assert "PublicKey = server-public" in issued.config
+    set_call = next(call for call in provisioner.calls if call[0][:1] == ["set"])
+    assert "/dev/stdin" in set_call[0]
+    assert set_call[1] == "client-psk\n"
+
+
+def test_native_stats_parser() -> None:
+    class StatsProvisioner(NativeAmneziaWGProvisioner):
+        def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
+            return (
+                "server-private\tserver-public\t51820\toff\n"
+                "peer-public\tpsk\t198.51.100.3:1234\t10.8.1.2/32\t"
+                "1700000000\t1024\t2048\t25\n"
+            )
+
+    stats = StatsProvisioner(Settings()).stats()["peer-public"]
+    assert stats.last_handshake_at is not None
+    assert stats.last_handshake_at.tzinfo == timezone.utc
+    assert stats.rx_bytes == 1024
+    assert stats.tx_bytes == 2048
+
+
+def test_native_assigned_ips_parser() -> None:
+    class AssignedProvisioner(NativeAmneziaWGProvisioner):
+        def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
+            return (
+                "peer-one\t10.8.1.2/32\n"
+                "peer-two\t10.8.1.8/32, 0.0.0.0/0\n"
+                "peer-three\t(none)\n"
+            )
+
+    assert AssignedProvisioner(Settings()).assigned_ips() == {"10.8.1.2", "10.8.1.8"}
+
+
+def test_native_save_uses_container_config_path() -> None:
+    class SaveProvisioner(NativeAmneziaWGProvisioner):
+        def __init__(self, settings: Settings):
+            super().__init__(settings)
+            self.call = None
+
+        def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
+            self.call = (args, binary)
+            return ""
+
+    provisioner = SaveProvisioner(
+        Settings(awg_config_path="/opt/amnezia/awg/awg0.conf", awg_quick_binary="/usr/bin/awg-quick")
+    )
+    provisioner._save()
+    assert provisioner.call == (
+        ["save", "/opt/amnezia/awg/awg0.conf"],
+        "/usr/bin/awg-quick",
+    )

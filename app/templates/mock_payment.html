@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Тестовая оплата — {{ app_name }}{% endblock %}
+{% block content %}
+<section class="auth-wrap shell centered">
+  <div class="auth-card payment-card">
+    <span class="badge">Тестовый шлюз</span>
+    <h1>Пополнение баланса</h1>
+    <div class="price">{{ '%.2f'|format(payment.amount_kopecks / 100) }} ₽</div>
+    <p>Баланс расходуется из расчета 100 ₽ за каждое активное устройство каждые 30 дней.</p>
+    <p>Денежные средства не списываются. Кнопка имитирует подтвержденный webhook платежного провайдера.</p>
+    <form method="post" action="/payments/mock/{{ payment.id }}/confirm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button full" type="submit">Подтвердить тестовую оплату</button>
+    </form>
+    <a class="ghost-button full" href="/app">Вернуться</a>
+  </div>
+</section>
+{% endblock %}

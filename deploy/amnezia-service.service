@@ -1,0 +1,21 @@
+[Unit]
+Description=Amnezia Service control plane
+After=network-online.target postgresql.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=amnezia-service
+Group=amnezia-service
+WorkingDirectory=/opt/amnezia-service
+EnvironmentFile=/etc/amnezia-service.env
+ExecStart=/opt/amnezia-service/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/amnezia-service
+
+[Install]
+WantedBy=multi-user.target

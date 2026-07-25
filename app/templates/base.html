@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+</head>
+<body>
+  <div class="noise"></div>
+  <header class="nav shell">
+    <a class="brand" href="/">
+      <span class="brand-mark">A</span>
+      <span>{{ app_name }}</span>
+    </a>
+    <nav>
+      {% if current_user %}
+        <span class="muted nav-email">{{ current_user.email }}</span>
+        <a href="{{ '/admin' if current_user.role.value == 'admin' else '/app' }}">Кабинет</a>
+        <form class="inline" action="/logout" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="link-button" type="submit">Выйти</button>
+        </form>
+      {% else %}
+        <a href="/login">Войти</a>
+        <a class="button small" href="/register">Начать</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer class="shell footer">
+    <span>{{ app_name }}</span>
+    <span class="muted">Защищенное подключение на базе AmneziaWG</span>
+  </footer>
+</body>
+</html>
+

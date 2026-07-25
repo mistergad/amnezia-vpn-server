@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Вход — {{ app_name }}{% endblock %}
+{% block content %}
+<section class="auth-wrap shell">
+  <div class="auth-copy">
+    <span class="eyebrow">Личный кабинет</span>
+    <h1>С возвращением.</h1>
+    <p>Ключи, устройства и подписки — в одном защищенном пространстве.</p>
+  </div>
+  <form class="auth-card" method="post" action="/login">
+    <h2>Войти</h2>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Email<input type="email" name="email" autocomplete="email" required></label>
+    <label>Пароль<input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="button full" type="submit">Войти</button>
+    <p class="form-foot">Нет аккаунта? <a href="/register">Зарегистрироваться</a></p>
+  </form>
+</section>
+{% endblock %}
+

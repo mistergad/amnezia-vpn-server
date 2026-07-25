@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ client.user.email }} — {{ app_name }}{% endblock %}
+{% block content %}
+<section class="shell dashboard-head client-detail-head">
+  <div>
+    <a class="back-link" href="/admin">← Все клиенты</a>
+    <span class="eyebrow">Управление клиентом</span>
+    <h1>{{ client.user.email }}</h1>
+  </div>
+  <span class="connection {{ client.status_class }}">{{ client.status_label }}</span>
+</section>
+
+<section class="shell client-summary-grid">
+  <article><span>Баланс</span><strong>{{ '%.2f'|format(client.balance_kopecks / 100) }} ₽</strong></article>
+  <article><span>Активные устройства</span><strong>{{ client.active_devices }}</strong></article>
+  <article>
+    <span>Дата окончания</span>
+    <strong>{{ client.expires_at.strftime('%d.%m.%Y') if client.expires_at else ('Не расходуется' if client.status == 'paused' else '—') }}</strong>
+  </article>
+</section>
+
+<section class="shell table-card">
+  <div class="table-title"><div><span class="eyebrow">VPN-доступ</span><h2>Устройства</h2></div></div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Устройство</th><th>IP</th><th>Статус</th><th>Создано</th><th></th></tr></thead>
+      <tbody>
+      {% for item in credentials %}
+        <tr>
+          <td><strong>{{ item.label }}</strong></td>
+          <td><span class="mono">{{ item.assigned_ip }}</span></td>
+          <td>
+            {% if item.status.value == 'active' %}
+              <span class="connection online">Активно</span>
+            {% else %}
+              <span class="connection revoked">Отозвано</span>
+            {% endif %}
+          </td>
+          <td><span class="nowrap">{{ item.created_at.strftime('%d.%m.%Y') }}</span></td>
+          <td>
+            <form method="post" action="/admin/devices/{{ item.id }}/delete" onsubmit="return confirm('Удалить устройство {{ item.label }}? Активный VPN-ключ будет немедленно отозван.')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="danger-button" type="submit">Удалить устройство</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="empty-cell">У клиента нет устройств</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="shell destructive-zone">
+  <div>
+    <span class="eyebrow danger-eyebrow">Опасная зона</span>
+    <h2>Удалить аккаунт клиента</h2>
+    <p>Будут отозваны все активные ключи и безвозвратно удалены баланс, подписки и история платежей.</p>
+  </div>
+  <form method="post" action="/admin/clients/{{ client.user.id }}/delete" onsubmit="return confirm('Полностью удалить аккаунт {{ client.user.email }}? Это действие нельзя отменить.')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="danger-button destructive-button" type="submit">Удалить аккаунт</button>
+  </form>
+</section>
+{% endblock %}

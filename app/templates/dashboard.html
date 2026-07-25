@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Мой VPN — {{ app_name }}{% endblock %}
+{% block content %}
+<section class="shell dashboard-head">
+  <div><span class="eyebrow">Личный кабинет</span><h1>Ваш VPN</h1></div>
+  <div class="status-pill"><span class="pulse"></span> Система работает</div>
+</section>
+
+{% set active = subscriptions|selectattr('status.value', 'equalto', 'active')|list %}
+<section class="shell balance-overview">
+  <article class="balance-main">
+    <span class="eyebrow">Доступный баланс</span>
+    <strong>{{ '%.2f'|format(balance_rubles) }} ₽</strong>
+    <p>100 ₽ = 30 дней для одного устройства</p>
+  </article>
+  {% if active %}
+  {% set current = active[0] %}
+  <article class="balance-detail">
+    <span class="muted">Текущий расход</span>
+    <strong>{{ current.device_limit * price_per_device }} ₽ / 30 дней</strong>
+    <p>{{ current.device_limit }} активных подключений</p>
+  </article>
+  <article class="balance-detail">
+    <span class="muted">Баланс закончится</span>
+    <strong>{{ current.expires_at.strftime('%d.%m.%Y') if current.expires_at else 'Не расходуется' }}</strong>
+    <p>{{ current.expires_at.strftime('%H:%M') ~ ' · по активным устройствам' if current.expires_at else 'добавьте устройство для запуска' }}</p>
+  </article>
+  {% else %}
+  <article class="balance-detail">
+    <span class="muted">Текущий расход</span><strong>0 ₽</strong><p>VPN пока не активирован</p>
+  </article>
+  <article class="balance-detail">
+    <span class="muted">Первый запуск</span><strong>от 100 ₽</strong><p>ключ появится после оплаты</p>
+  </article>
+  {% endif %}
+</section>
+
+{% if not active %}
+<section class="shell empty-state balance-start">
+  <div>
+    <span class="eyebrow">Запустить VPN</span>
+    <h2>Пополните баланс</h2>
+    <p>Первый ключ появится автоматически. Каждый следующий активный ключ увеличит расход еще на 100 ₽ за 30 дней.</p>
+  </div>
+  <form class="balance-form" method="post" action="/balance/topup" data-balance-calculator data-device-count="1">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Сумма пополнения, ₽
+      <input type="number" name="amount_rubles" min="100" max="100000" step="100" value="300" required>
+    </label>
+    <div class="forecast"><span>Для первого устройства</span><strong data-forecast>90 дней</strong></div>
+    <button class="button full" type="submit">Пополнить и запустить</button>
+  </form>
+</section>
+{% endif %}
+
+{% for sub in active %}
+<section class="shell subscription-card">
+  <div class="subscription-meta balance-subscription-meta">
+    <div><span class="muted">Статус</span><strong>Активна</strong></div>
+    <div><span class="muted">Действует до</span><strong>{{ sub.expires_at.strftime('%d.%m.%Y') if sub.expires_at else 'Приостановлена' }}</strong></div>
+    <div><span class="muted">Активные устройства</span><strong>{{ sub.device_limit }}</strong></div>
+  </div>
+  {% set active_credentials = sub.credentials|selectattr('status.value', 'equalto', 'active')|list %}
+  <div class="device-grid">
+    {% for item in active_credentials %}
+    <article class="device-card">
+      <div class="device-top">
+        <div class="device-icon">⌁</div>
+        <span class="connection {{ 'online' if is_connected(item.last_handshake_at) else '' }}">{{ 'Подключено' if is_connected(item.last_handshake_at) else 'Не в сети' }}</span>
+      </div>
+      <h3>{{ item.label }}</h3>
+      <p class="mono">{{ item.assigned_ip }}</p>
+      <div class="device-stats"><span>↓ {{ format_bytes(item.rx_bytes) }}</span><span>↑ {{ format_bytes(item.tx_bytes) }}</span></div>
+      <div class="device-actions">
+        <a class="button small" href="/app/devices/{{ item.id }}/config">Скачать .conf</a>
+        <a class="icon-button" href="/app/devices/{{ item.id }}/qr" target="_blank" title="QR-код">▦</a>
+        <form class="inline" method="post" action="/app/devices/{{ item.id }}/revoke" onsubmit="return confirm('Отозвать доступ этого устройства?')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="danger-button" type="submit">Отозвать</button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+    {% if active_credentials|length < max_devices %}
+    <form class="device-card add-device" method="post" action="/app/devices">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="subscription_id" value="{{ sub.id }}">
+      <div class="add-icon">+</div><h3>Добавить устройство</h3>
+      <input aria-label="Название устройства" name="label" maxlength="120" placeholder="Например, MacBook" required>
+      <button class="ghost-button full" type="submit">Выпустить ключ</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endfor %}
+
+{% if active %}
+<section class="shell renew-block balance-topup">
+  <div><span class="eyebrow">Баланс</span><h2>Пополнить счет</h2><p class="muted">Расход определяется числом активных устройств.</p></div>
+  <form class="balance-form horizontal no-device-field" method="post" action="/balance/topup" data-balance-calculator data-device-count="{{ [active[0].device_limit, 1]|max }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Сумма, ₽<input type="number" name="amount_rubles" min="100" max="100000" step="100" value="300" required></label>
+    <div class="forecast"><span>Добавится примерно</span><strong data-forecast>—</strong></div>
+    <button class="button" type="submit">Пополнить</button>
+  </form>
+</section>
+{% endif %}
+
+<script>
+document.querySelectorAll('[data-balance-calculator]').forEach(function (form) {
+  const amount = form.querySelector('[name="amount_rubles"]');
+  const devices = Math.max(1, Number(form.dataset.deviceCount || 1));
+  const output = form.querySelector('[data-forecast]');
+  function updateForecast() {
+    const days = Math.max(0, Number(amount.value)) / 100 * 30 / devices;
+    output.textContent = (days >= 1 ? days.toFixed(days < 10 ? 1 : 0) + ' дней' : Math.round(days * 24) + ' часов');
+  }
+  amount.addEventListener('input', updateForecast);
+  updateForecast();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,5 @@
+# Replace paths/interface/container after checking them with `command -v`.
+# This allows the service account to change peers only inside the AmneziaWG container.
+Cmnd_Alias AMNEZIA_PEERS = /usr/bin/docker exec -i amnezia-awg2 /usr/bin/awg *, \
+                           /usr/bin/docker exec -i amnezia-awg2 /usr/bin/awg-quick save /opt/amnezia/awg/awg0.conf
+amnezia-service ALL=(root) NOPASSWD: AMNEZIA_PEERS

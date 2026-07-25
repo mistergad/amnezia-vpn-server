@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Клиенты — {{ app_name }}{% endblock %}
+{% block content %}
+<section class="shell dashboard-head">
+  <div><span class="eyebrow">Панель управления</span><h1>Клиенты</h1></div>
+</section>
+
+<section class="shell table-card admin-clients-card">
+  <div class="table-title">
+    <div><span class="eyebrow">Клиентская база</span><h2>Баланс и доступ</h2></div>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Клиент</th><th>Баланс</th><th>Устройства</th><th>Статус</th><th>Дата окончания</th><th></th></tr>
+      </thead>
+      <tbody>
+      {% for item in clients %}
+        <tr>
+          <td><strong>{{ item.user.email }}</strong></td>
+          <td><span class="client-balance">{{ '%.2f'|format(item.balance_kopecks / 100) }} ₽</span></td>
+          <td><span class="device-count">{{ item.active_devices }}</span></td>
+          <td><span class="connection {{ item.status_class }}">{{ item.status_label }}</span></td>
+          <td>
+            {% if item.expires_at %}
+              <span class="nowrap">{{ item.expires_at.strftime('%d.%m.%Y') }}</span>
+              <small>{{ item.expires_at.strftime('%H:%M') }}</small>
+            {% elif item.status == 'paused' %}
+              <span class="muted">Не расходуется</span>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td class="client-actions">
+            <a class="ghost-button compact-button" href="/admin/clients/{{ item.user.id }}">Управлять</a>
+            <form method="post" action="/admin/clients/{{ item.user.id }}/delete" onsubmit="return confirm('Удалить аккаунт {{ item.user.email }}? Все VPN-ключи, баланс и история платежей будут удалены без возможности восстановления.')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="danger-button" type="submit">Удалить аккаунт</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="empty-cell">Клиентов пока нет</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
