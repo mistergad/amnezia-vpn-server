@@ -24,6 +24,7 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 AWG_PORT="${AWG_PORT:-55424}"
 PUBLIC_INTERFACE="${PUBLIC_INTERFACE:-eth0}"
+IP_TLS_MODE="${IP_TLS_MODE:-public}"
 HOST_IS_IP=false
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -45,10 +46,13 @@ Options:
   --admin-email EMAIL          Initial administrator (default: derived from HOST)
   --admin-password PASSWORD    At least 12 safe ASCII characters; generated if omitted
   --awg-port PORT              Public AWG2 UDP port (default: 55424)
+  --ip-tls-mode MODE           TLS for an IPv4 host: public or internal (default: public)
   -h, --help                   Show this help
 
 The script targets a dedicated Ubuntu 24.04 server. It installs Docker,
 PostgreSQL, Caddy, AWG2 and the control panel. Re-running it is supported.
+For a public IPv4, Caddy obtains and renews a publicly trusted short-lived
+Let's Encrypt certificate. Use --ip-tls-mode internal only as a fallback.
 EOF
 }
 
@@ -59,6 +63,7 @@ while (($#)); do
     --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
     --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
     --awg-port) AWG_PORT="${2:-}"; shift 2 ;;
+    --ip-tls-mode) IP_TLS_MODE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
@@ -141,6 +146,8 @@ else
 fi
 [[ "$AWG_PORT" =~ ^[0-9]+$ ]] && ((AWG_PORT >= 1024 && AWG_PORT <= 65535)) || \
   die "--awg-port must be between 1024 and 65535."
+[[ "$IP_TLS_MODE" == "public" || "$IP_TLS_MODE" == "internal" ]] || \
+  die "--ip-tls-mode must be public or internal."
 
 EXISTING_ADMIN_EMAIL="$(read_env_value ADMIN_EMAIL)"
 if [[ "$HOST_IS_IP" == true ]]; then
@@ -177,7 +184,8 @@ apt-get install -y \
   python3 python3-pip python3-venv sudo ufw
 systemctl enable --now docker postgresql
 
-if ! command -v caddy >/dev/null 2>&1; then
+if [[ ! -f /etc/apt/sources.list.d/caddy-stable.list \
+    || ! -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]]; then
   log "Installing Caddy from its official stable repository"
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
     | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -185,9 +193,9 @@ if ! command -v caddy >/dev/null 2>&1; then
     -o /etc/apt/sources.list.d/caddy-stable.list
   chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   chmod o+r /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update
-  apt-get install -y caddy
 fi
+apt-get update
+apt-get install -y caddy
 
 rand_between() {
   local minimum="$1" maximum="$2"
@@ -397,7 +405,11 @@ systemctl restart amnezia-service
 log "Configuring Caddy HTTPS reverse proxy"
 install -d -o root -g caddy -m 0750 /etc/caddy/sites-enabled
 if [[ "$HOST_IS_IP" == true ]]; then
-  CADDY_TLS_DIRECTIVE="    tls internal"
+  if [[ "$IP_TLS_MODE" == "public" ]]; then
+    CADDY_TLS_DIRECTIVE=$'    tls {\n        issuer acme https://acme-v02.api.letsencrypt.org/directory {\n            profile shortlived\n        }\n    }'
+  else
+    CADDY_TLS_DIRECTIVE="    tls internal"
+  fi
 else
   CADDY_TLS_DIRECTIVE=""
 fi
@@ -449,9 +461,14 @@ Admin password: $ADMIN_PASSWORD
 AWG2 endpoint: $DOMAIN:$AWG_PORT/udp
 Environment: $ENV_FILE
 EOF
-if [[ "$HOST_IS_IP" == true ]]; then
+if [[ "$HOST_IS_IP" == true && "$IP_TLS_MODE" == "internal" ]]; then
   cat >> "$CREDENTIALS_FILE" <<EOF
 Caddy local CA: /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
+EOF
+fi
+if [[ "$HOST_IS_IP" == true && "$IP_TLS_MODE" == "public" ]]; then
+  cat >> "$CREDENTIALS_FILE" <<EOF
+TLS certificate: Let's Encrypt short-lived IP certificate (automatic renewal)
 EOF
 fi
 chmod 0600 "$CREDENTIALS_FILE"
@@ -459,8 +476,11 @@ chmod 0600 "$CREDENTIALS_FILE"
 if [[ "$HOST_IS_IP" == false ]] && ! getent ahostsv4 "$DOMAIN" >/dev/null 2>&1; then
   warn "$DOMAIN does not resolve to IPv4 yet. Caddy will issue HTTPS after DNS and TCP 80/443 are reachable."
 fi
-if [[ "$HOST_IS_IP" == true ]]; then
+if [[ "$HOST_IS_IP" == true && "$IP_TLS_MODE" == "internal" ]]; then
   warn "HTTPS uses Caddy's local CA because no domain was supplied. Import its root.crt on administrator devices to remove the browser certificate warning."
+fi
+if [[ "$HOST_IS_IP" == true && "$IP_TLS_MODE" == "public" ]]; then
+  warn "Caddy is obtaining a publicly trusted Let's Encrypt IP certificate. TCP 80/443 must be reachable from the Internet; Caddy will retry and renew it automatically."
 fi
 
 log "Deployment completed"
