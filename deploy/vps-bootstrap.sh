@@ -12,6 +12,7 @@ readonly APP_DIR="/opt/amnezia-service"
 readonly APP_USER="amnezia-service"
 readonly ENV_FILE="/etc/amnezia-service.env"
 readonly CREDENTIALS_FILE="/root/amnezia-service-credentials.txt"
+readonly CADDY_DATA_DIR="/var/lib/caddy/.local/share/caddy"
 readonly CONTAINER_NAME="amnezia-awg2"
 readonly AWG_BUILD_DIR="/opt/amnezia/amnezia-awg2"
 readonly GENERATED_DIR="/opt/amnezia/deploy-generated"
@@ -427,8 +428,29 @@ if ! grep -Fq 'import /etc/caddy/sites-enabled/*.caddy' /etc/caddy/Caddyfile; th
 fi
 caddy fmt --overwrite /etc/caddy/sites-enabled/amnezia-service.caddy
 caddy validate --config /etc/caddy/Caddyfile
+
+CADDY_SERVICE_ACTION="reload"
+if [[ "$HOST_IS_IP" == true && "$IP_TLS_MODE" == "public" ]]; then
+  CADDY_LOCAL_CERT_BASE="$CADDY_DATA_DIR/certificates/local"
+  CADDY_LOCAL_CERT_DIR="$CADDY_LOCAL_CERT_BASE/$DOMAIN"
+  if [[ -d "$CADDY_LOCAL_CERT_DIR" ]]; then
+    CADDY_LOCAL_CERT_BASE_REAL="$(readlink -f -- "$CADDY_LOCAL_CERT_BASE")"
+    CADDY_LOCAL_CERT_DIR_REAL="$(readlink -f -- "$CADDY_LOCAL_CERT_DIR")"
+    [[ "$CADDY_LOCAL_CERT_DIR_REAL" == "$CADDY_LOCAL_CERT_BASE_REAL/$DOMAIN" ]] || \
+      die "Refusing to move an unexpected Caddy certificate path: $CADDY_LOCAL_CERT_DIR_REAL"
+
+    CADDY_MIGRATION_DIR="$CADDY_DATA_DIR/migrated-local-certificates"
+    CADDY_MIGRATION_TARGET="$CADDY_MIGRATION_DIR/$DOMAIN.$(date +%Y%m%d%H%M%S)"
+    install -d -o caddy -g caddy -m 0700 "$CADDY_MIGRATION_DIR"
+    mv -- "$CADDY_LOCAL_CERT_DIR_REAL" "$CADDY_MIGRATION_TARGET"
+    chown -R caddy:caddy "$CADDY_MIGRATION_TARGET"
+    log "Archived the previous local IP certificate at $CADDY_MIGRATION_TARGET"
+    CADDY_SERVICE_ACTION="restart"
+  fi
+fi
+
 systemctl enable --now caddy
-systemctl reload caddy
+systemctl "$CADDY_SERVICE_ACTION" caddy
 
 if ufw status 2>/dev/null | grep -q '^Status: active'; then
   log "Updating the active UFW policy"
@@ -453,6 +475,25 @@ for attempt in {1..30}; do
   fi
   sleep 1
 done
+
+if [[ "$HOST_IS_IP" == true && "$IP_TLS_MODE" == "public" ]]; then
+  log "Waiting for the publicly trusted IP certificate"
+  PUBLIC_TLS_READY=false
+  for attempt in {1..30}; do
+    if curl --fail --silent \
+      --connect-to "$DOMAIN:443:127.0.0.1:443" \
+      "https://$DOMAIN/healthz" >/dev/null 2>&1; then
+      PUBLIC_TLS_READY=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$PUBLIC_TLS_READY" == true ]]; then
+    log "The publicly trusted IP certificate is active"
+  else
+    warn "The public IP certificate is not active yet. Inspect: journalctl -u caddy -n 100 --no-pager"
+  fi
+fi
 
 cat > "$CREDENTIALS_FILE" <<EOF
 URL: https://$DOMAIN/admin
