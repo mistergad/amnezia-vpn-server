@@ -23,6 +23,8 @@ DOMAIN="${DOMAIN:-}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 AWG_PORT="${AWG_PORT:-55424}"
+PUBLIC_INTERFACE="${PUBLIC_INTERFACE:-eth0}"
+HOST_IS_IP=false
 
 log() { printf '\n==> %s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
@@ -31,13 +33,16 @@ die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  sudo bash deploy/vps-bootstrap.sh --domain vpn.example.com [options]
-
-Required:
-  --domain DOMAIN              DNS name whose A/AAAA record points to this VPS
+  sudo bash deploy/vps-bootstrap.sh [options]
+  sudo bash deploy/vps-bootstrap.sh --host vpn.example.com [options]
+  sudo bash deploy/vps-bootstrap.sh --host 203.0.113.10 [options]
 
 Options:
-  --admin-email EMAIL          Initial administrator (default: admin@DOMAIN)
+  --interface IFACE            Interface for automatic IPv4 detection (default: eth0)
+  --host HOST                  Override detected IPv4 with a domain or IPv4 address
+  --domain DOMAIN              Backward-compatible alias for --host
+  --ip IPV4                    Alias for --host when no domain is available
+  --admin-email EMAIL          Initial administrator (default: derived from HOST)
   --admin-password PASSWORD    At least 12 safe ASCII characters; generated if omitted
   --awg-port PORT              Public AWG2 UDP port (default: 55424)
   -h, --help                   Show this help
@@ -49,7 +54,8 @@ EOF
 
 while (($#)); do
   case "$1" in
-    --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --host|--domain|--ip) DOMAIN="${2:-}"; shift 2 ;;
+    --interface) PUBLIC_INTERFACE="${2:-}"; shift 2 ;;
     --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
     --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
     --awg-port) AWG_PORT="${2:-}"; shift 2 ;;
@@ -58,19 +64,90 @@ while (($#)); do
   esac
 done
 
+read_env_value() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
+is_ipv4() {
+  local address="$1" first second third fourth extra octet
+  IFS='.' read -r first second third fourth extra <<< "$address"
+  [[ -n "$first" && -n "$second" && -n "$third" && -n "$fourth" && -z "$extra" ]] || return 1
+  for octet in "$first" "$second" "$third" "$fourth"; do
+    [[ "$octet" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+}
+
+is_non_public_ipv4() {
+  local first second third fourth
+  IFS='.' read -r first second third fourth <<< "$1"
+  first=$((10#$first))
+  second=$((10#$second))
+  ((first == 0 || first == 10 || first == 127 || first >= 224)) && return 0
+  ((first == 100 && second >= 64 && second <= 127)) && return 0
+  ((first == 169 && second == 254)) && return 0
+  ((first == 172 && second >= 16 && second <= 31)) && return 0
+  ((first == 192 && second == 168)) && return 0
+  ((first == 198 && (second == 18 || second == 19))) && return 0
+  return 1
+}
+
+detect_interface_ipv4() {
+  local interface="$1" route_line detected
+  route_line="$(ip -4 route get 1.1.1.1 oif "$interface" 2>/dev/null || true)"
+  detected="$(awk '{
+    for (index = 1; index <= NF; index++) {
+      if ($index == "src" && index < NF) {
+        print $(index + 1)
+        exit
+      }
+    }
+  }' <<< "$route_line")"
+  if [[ -z "$detected" ]]; then
+    detected="$(ip -4 -o address show dev "$interface" scope global \
+      | awk 'NR == 1 {split($4, address, "/"); print address[1]}')"
+  fi
+  printf '%s\n' "$detected"
+}
+
 [[ "${EUID}" -eq 0 ]] || die "Run this script as root (sudo)."
 [[ -r /etc/os-release ]] || die "Cannot identify the operating system."
 # shellcheck disable=SC1091
 source /etc/os-release
 [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "24.04" ]] || \
   die "Ubuntu 24.04 is required (found ${PRETTY_NAME:-unknown})."
-[[ -n "$DOMAIN" ]] || die "--domain is required."
-[[ "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] || \
-  die "Invalid domain: $DOMAIN"
+[[ "$PUBLIC_INTERFACE" =~ ^[A-Za-z0-9_.:-]+$ ]] || die "Invalid network interface name."
+if [[ -z "$DOMAIN" ]]; then
+  command -v ip >/dev/null 2>&1 || die "The ip command is unavailable; use --host explicitly."
+  ip link show dev "$PUBLIC_INTERFACE" >/dev/null 2>&1 || \
+    die "Network interface $PUBLIC_INTERFACE does not exist; use --interface or --host."
+  DOMAIN="$(detect_interface_ipv4 "$PUBLIC_INTERFACE")"
+  [[ -n "$DOMAIN" ]] || \
+    die "No global IPv4 address found on $PUBLIC_INTERFACE; use --host explicitly."
+  is_ipv4 "$DOMAIN" || die "The address detected on $PUBLIC_INTERFACE is not valid: $DOMAIN"
+  if is_non_public_ipv4 "$DOMAIN"; then
+    die "Detected non-public IPv4 $DOMAIN on $PUBLIC_INTERFACE; use --host with the VPS public address."
+  fi
+  log "Detected VPS IPv4 $DOMAIN on $PUBLIC_INTERFACE"
+fi
+if is_ipv4 "$DOMAIN"; then
+  HOST_IS_IP=true
+elif [[ "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+  HOST_IS_IP=false
+else
+  die "Host must be a valid domain or IPv4 address: $DOMAIN"
+fi
 [[ "$AWG_PORT" =~ ^[0-9]+$ ]] && ((AWG_PORT >= 1024 && AWG_PORT <= 65535)) || \
   die "--awg-port must be between 1024 and 65535."
 
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$DOMAIN}"
+EXISTING_ADMIN_EMAIL="$(read_env_value ADMIN_EMAIL)"
+if [[ "$HOST_IS_IP" == true ]]; then
+  ADMIN_EMAIL="${ADMIN_EMAIL:-${EXISTING_ADMIN_EMAIL:-admin@localhost}}"
+else
+  ADMIN_EMAIL="${ADMIN_EMAIL:-${EXISTING_ADMIN_EMAIL:-admin@$DOMAIN}}"
+fi
 [[ "$ADMIN_EMAIL" =~ ^[A-Za-z0-9.!#$%\&\'*+/=?^_\`{|}~-]+@[A-Za-z0-9.-]+$ ]] || \
   die "Invalid administrator email."
 if [[ -n "$ADMIN_PASSWORD" ]]; then
@@ -91,12 +168,6 @@ done
 
 umask 077
 export DEBIAN_FRONTEND=noninteractive
-
-read_env_value() {
-  local key="$1"
-  [[ -f "$ENV_FILE" ]] || return 0
-  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
-}
 
 log "Installing operating-system packages"
 apt-get update
@@ -325,10 +396,16 @@ systemctl restart amnezia-service
 
 log "Configuring Caddy HTTPS reverse proxy"
 install -d -o root -g caddy -m 0750 /etc/caddy/sites-enabled
+if [[ "$HOST_IS_IP" == true ]]; then
+  CADDY_TLS_DIRECTIVE="    tls internal"
+else
+  CADDY_TLS_DIRECTIVE=""
+fi
 cat > /etc/caddy/sites-enabled/amnezia-service.caddy <<EOF
 $DOMAIN {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8000
+$CADDY_TLS_DIRECTIVE
 }
 EOF
 chmod 0644 /etc/caddy/sites-enabled/amnezia-service.caddy
@@ -372,10 +449,18 @@ Admin password: $ADMIN_PASSWORD
 AWG2 endpoint: $DOMAIN:$AWG_PORT/udp
 Environment: $ENV_FILE
 EOF
+if [[ "$HOST_IS_IP" == true ]]; then
+  cat >> "$CREDENTIALS_FILE" <<EOF
+Caddy local CA: /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
+EOF
+fi
 chmod 0600 "$CREDENTIALS_FILE"
 
-if ! getent ahostsv4 "$DOMAIN" >/dev/null 2>&1; then
+if [[ "$HOST_IS_IP" == false ]] && ! getent ahostsv4 "$DOMAIN" >/dev/null 2>&1; then
   warn "$DOMAIN does not resolve to IPv4 yet. Caddy will issue HTTPS after DNS and TCP 80/443 are reachable."
+fi
+if [[ "$HOST_IS_IP" == true ]]; then
+  warn "HTTPS uses Caddy's local CA because no domain was supplied. Import its root.crt on administrator devices to remove the browser certificate warning."
 fi
 
 log "Deployment completed"
