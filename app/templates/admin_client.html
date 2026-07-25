@@ -38,10 +38,17 @@
           </td>
           <td><span class="nowrap">{{ item.created_at.strftime('%d.%m.%Y') }}</span></td>
           <td>
-            <form method="post" action="/admin/devices/{{ item.id }}/delete" onsubmit="return confirm('Удалить устройство {{ item.label }}? Активный VPN-ключ будет немедленно отозван.')">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="danger-button" type="submit">Удалить устройство</button>
-            </form>
+            <div class="client-actions">
+              {% if item.status.value == 'active' %}
+                <a class="ghost-button compact-button" href="/app/devices/{{ item.id }}/key" target="_blank">Текстовый ключ</a>
+                <a class="ghost-button compact-button" href="/app/devices/{{ item.id }}/config">.conf</a>
+                <a class="icon-button" href="/app/devices/{{ item.id }}/qr" target="_blank" title="QR-код">▦</a>
+              {% endif %}
+              <form method="post" action="/admin/devices/{{ item.id }}/delete" onsubmit="return confirm('Удалить устройство {{ item.label }}? Активный VPN-ключ будет немедленно отозван.')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="danger-button" type="submit">Удалить устройство</button>
+              </form>
+            </div>
           </td>
         </tr>
       {% else %}

@@ -73,6 +73,7 @@
       <div class="device-stats"><span>↓ {{ format_bytes(item.rx_bytes) }}</span><span>↑ {{ format_bytes(item.tx_bytes) }}</span></div>
       <div class="device-actions">
         <a class="button small" href="/app/devices/{{ item.id }}/config">Скачать .conf</a>
+        <button class="ghost-button small" type="button" data-copy-key-url="/app/devices/{{ item.id }}/key">Скопировать ключ</button>
         <a class="icon-button" href="/app/devices/{{ item.id }}/qr" target="_blank" title="QR-код">▦</a>
         <form class="inline" method="post" action="/app/devices/{{ item.id }}/revoke" onsubmit="return confirm('Отозвать доступ этого устройства?')">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -117,6 +118,38 @@ document.querySelectorAll('[data-balance-calculator]').forEach(function (form) {
   }
   amount.addEventListener('input', updateForecast);
   updateForecast();
+});
+
+document.querySelectorAll('[data-copy-key-url]').forEach(function (button) {
+  button.addEventListener('click', async function () {
+    const original = button.textContent;
+    try {
+      const response = await fetch(button.dataset.copyKeyUrl, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {'Accept': 'text/plain'}
+      });
+      if (!response.ok) throw new Error('Key request failed');
+      const key = await response.text();
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(key);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = key;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      button.textContent = 'Скопировано';
+      setTimeout(function () { button.textContent = original; }, 1800);
+    } catch (error) {
+      window.open(button.dataset.copyKeyUrl, '_blank', 'noopener');
+    }
+  });
 });
 </script>
 {% endblock %}

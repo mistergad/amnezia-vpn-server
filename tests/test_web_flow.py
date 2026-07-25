@@ -53,6 +53,7 @@ def test_registration_payment_key_and_revoke_flow() -> None:
         dashboard = client.get("/app")
         assert "Первое устройство" in dashboard.text
         assert "Скачать .conf" in dashboard.text
+        assert "Скопировать ключ" in dashboard.text
 
         with SessionLocal() as db:
             payment = db.scalar(select(Payment).where(Payment.user.has(email="client@example.com")))
@@ -133,6 +134,11 @@ def test_registration_payment_key_and_revoke_flow() -> None:
         assert "PrivateKey =" in config_response.text
         assert config_response.headers["cache-control"] == "no-store"
 
+        key_response = client.get(f"/app/devices/{credential_id}/key")
+        assert key_response.status_code == 200
+        assert key_response.text.startswith("vpn://")
+        assert key_response.headers["cache-control"] == "no-store"
+
         revoked = client.post(
             f"/app/devices/{credential_id}/revoke",
             data={"csrf_token": csrf(dashboard.text)},
@@ -140,6 +146,7 @@ def test_registration_payment_key_and_revoke_flow() -> None:
         )
         assert revoked.status_code == 303
         assert client.get(f"/app/devices/{credential_id}/config").status_code == 410
+        assert client.get(f"/app/devices/{credential_id}/key").status_code == 410
 
 
 def test_admin_can_open_client_api() -> None:

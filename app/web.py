@@ -23,6 +23,7 @@ from app.models import (
     utcnow,
 )
 from app.security import ConfigCipher, hash_password, new_csrf_token, normalize_email, verify_password
+from app.services.amnezia_key import build_amnezia_vpn_key
 from app.services.lifecycle import (
     BusinessRuleError,
     activate_payment,
@@ -399,6 +400,30 @@ def credential_qr(request: Request, db: Db, credential_id: str) -> StreamingResp
         output,
         media_type="image/png",
         headers={"Cache-Control": "no-store", "Content-Disposition": "inline"},
+    )
+
+
+@router.get("/app/devices/{credential_id}/key")
+def credential_text_key(request: Request, db: Db, credential_id: str) -> Response:
+    credential = _owned_credential(request, db, credential_id)
+    if credential.status != CredentialStatus.ACTIVE:
+        raise HTTPException(410, "Ключ отозван")
+    settings = request.app.state.settings
+    config = ConfigCipher(settings).decrypt(credential.config_encrypted)
+    key = build_amnezia_vpn_key(
+        config=config,
+        client_public_key=credential.public_key,
+        label=credential.label,
+        settings=settings,
+    )
+    return Response(
+        content=key,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": "inline",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
