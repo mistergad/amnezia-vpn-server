@@ -175,12 +175,12 @@ else
   install -d -m 0755 "$AWG_BUILD_DIR" "$GENERATED_DIR"
   install -m 0644 "$VENDOR_DIR/awg2/Dockerfile" "$AWG_BUILD_DIR/Dockerfile"
 
-  DOCKERFILE_FOLDER="$AWG_BUILD_DIR" bash "$VENDOR_DIR/prepare_host.sh"
-  CONTAINER_NAME="$CONTAINER_NAME" DOCKERFILE_FOLDER="$AWG_BUILD_DIR" \
-    bash "$VENDOR_DIR/build_container.sh"
-
-  CONTAINER_NAME="$CONTAINER_NAME" AWG_SERVER_PORT="$AWG_PORT" \
-    bash "$VENDOR_DIR/awg2/run_container.sh"
+  DOCKERFILE_FOLDER="$AWG_BUILD_DIR"
+  AWG_SERVER_PORT="$AWG_PORT"
+  export CONTAINER_NAME DOCKERFILE_FOLDER AWG_SERVER_PORT
+  bash "$VENDOR_DIR/prepare_host.sh"
+  bash "$VENDOR_DIR/build_container.sh"
+  bash "$VENDOR_DIR/awg2/run_container.sh"
 
   export AWG_SUBNET_IP AWG_SUBNET_CIDR AWG_PORT
   export WIREGUARD_SUBNET_CIDR="$AWG_SUBNET_CIDR"
