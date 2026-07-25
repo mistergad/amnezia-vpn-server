@@ -281,7 +281,7 @@ SECRET_KEY=$SECRET_KEY
 ENCRYPTION_KEY=$ENCRYPTION_KEY
 DATABASE_URL=postgresql+psycopg://amnezia:$DB_PASSWORD@127.0.0.1:5432/amnezia
 DEPLOY_DB_PASSWORD=$DB_PASSWORD
-TRUSTED_HOSTS=["$DOMAIN"]
+TRUSTED_HOSTS=["$DOMAIN","localhost","127.0.0.1"]
 ADMIN_EMAIL=$ADMIN_EMAIL
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 SESSION_HTTPS_ONLY=true
@@ -353,7 +353,9 @@ else
 fi
 
 for attempt in {1..30}; do
-  if curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null; then
+  if curl --fail --silent --show-error \
+    --header "Host: $DOMAIN" \
+    http://127.0.0.1:8000/healthz >/dev/null; then
     break
   fi
   if ((attempt == 30)); then
