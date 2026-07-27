@@ -38,17 +38,24 @@
 {% if not active %}
 <section class="shell empty-state balance-start">
   <div>
-    <span class="eyebrow">Запустить VPN</span>
+    <span class="eyebrow">{{ 'Возобновить VPN' if suspended_devices else 'Запустить VPN' }}</span>
     <h2>Пополните баланс</h2>
-    <p>Первый ключ появится автоматически. Каждый следующий активный ключ увеличит расход еще на 100 ₽ за 30 дней.</p>
+    {% if suspended_devices %}
+      <p>После оплаты прежние ключи ({{ suspended_devices }} шт.) снова заработают автоматически. Повторный импорт не потребуется.</p>
+    {% else %}
+      <p>Первый ключ появится автоматически. Каждый следующий активный ключ увеличит расход еще на 100 ₽ за 30 дней.</p>
+    {% endif %}
   </div>
-  <form class="balance-form" method="post" action="/balance/topup" data-balance-calculator data-device-count="1">
+  <form class="balance-form" method="post" action="/balance/topup" data-balance-calculator data-device-count="{{ suspended_devices or 1 }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Сумма пополнения, ₽
       <input type="number" name="amount_rubles" min="100" max="100000" step="100" value="300" required>
     </label>
-    <div class="forecast"><span>Для первого устройства</span><strong data-forecast>90 дней</strong></div>
-    <button class="button full" type="submit">Пополнить и запустить</button>
+    <div class="forecast">
+      <span>{{ 'Для прежних устройств' if suspended_devices else 'Для первого устройства' }}</span>
+      <strong data-forecast>{{ (90 / (suspended_devices or 1))|round(1) }} дней</strong>
+    </div>
+    <button class="button full" type="submit">{{ 'Пополнить и возобновить' if suspended_devices else 'Пополнить и запустить' }}</button>
   </form>
 </section>
 {% endif %}
@@ -61,6 +68,7 @@
     <div><span class="muted">Активные устройства</span><strong>{{ sub.device_limit }}</strong></div>
   </div>
   {% set active_credentials = sub.credentials|selectattr('status.value', 'equalto', 'active')|list %}
+  {% set suspended_credentials = sub.credentials|selectattr('status.value', 'equalto', 'suspended')|list %}
   <div class="device-grid">
     {% for item in active_credentials %}
     <article class="device-card">
@@ -82,7 +90,19 @@
       </div>
     </article>
     {% endfor %}
-    {% if active_credentials|length < max_devices %}
+    {% for item in suspended_credentials %}
+    <article class="device-card">
+      <div class="device-top">
+        <div class="device-icon">⌁</div>
+        <span class="connection">Восстанавливается</span>
+      </div>
+      <h3>{{ item.label }}</h3>
+      <p class="mono">{{ item.assigned_ip }}</p>
+      <div class="device-stats"><span>↓ {{ format_bytes(item.rx_bytes) }}</span><span>↑ {{ format_bytes(item.tx_bytes) }}</span></div>
+      <p class="muted">Сервис повторит подключение ключа автоматически.</p>
+    </article>
+    {% endfor %}
+    {% if active_credentials|length + suspended_credentials|length < max_devices %}
     <form class="device-card add-device" method="post" action="/app/devices">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="subscription_id" value="{{ sub.id }}">

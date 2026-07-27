@@ -43,6 +43,8 @@
           <td>
             {% if item.status.value == 'active' %}
               <span class="connection online">Активно</span>
+            {% elif item.status.value == 'suspended' %}
+              <span class="connection">Приостановлено</span>
             {% else %}
               <span class="connection revoked">Отозвано</span>
             {% endif %}

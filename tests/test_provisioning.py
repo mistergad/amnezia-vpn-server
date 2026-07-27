@@ -19,6 +19,9 @@ def test_mock_provisioner_issues_importable_config() -> None:
     provisioner.revoke(issued.public_key)
     assert issued.public_key not in provisioner.stats()
     assert provisioner.assigned_ips() == set()
+    provisioner.restore(issued.public_key, "10.8.1.2", issued.config)
+    assert issued.public_key in provisioner.stats()
+    assert provisioner.assigned_ips() == {"10.8.1.2"}
 
 
 def test_native_provisioner_reads_live_amnezia_parameters(tmp_path) -> None:
@@ -68,6 +71,14 @@ H4 = 4
     set_call = next(call for call in provisioner.calls if call[0][:1] == ["set"])
     assert "/dev/stdin" in set_call[0]
     assert set_call[1] == "client-psk\n"
+
+    provisioner.restore(issued.public_key, "10.8.1.9", issued.config)
+    restore_call = [
+        call for call in provisioner.calls
+        if call[0][:4] == ["set", "awg0", "peer", "client-public"]
+    ][-1]
+    assert restore_call[0][-2:] == ["allowed-ips", "10.8.1.9/32"]
+    assert restore_call[1] == "client-psk\n"
 
 
 def test_native_stats_parser() -> None:

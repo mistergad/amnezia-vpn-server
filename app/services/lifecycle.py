@@ -78,6 +78,7 @@ def seed_data(db: Session, settings: Settings) -> None:
         )
     db.commit()
     _migrate_legacy_subscriptions(db)
+    _migrate_legacy_expired_credentials(db)
     _sync_active_device_counts(db)
 
 
@@ -118,7 +119,9 @@ def _sync_active_device_counts(db: Session) -> None:
         active_devices = db.scalar(
             select(func.count(VpnCredential.id)).where(
                 VpnCredential.subscription_id == subscription.id,
-                VpnCredential.status == CredentialStatus.ACTIVE,
+                VpnCredential.status.in_(
+                    [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
+                ),
             )
         ) or 0
         subscription.device_limit = active_devices
@@ -128,6 +131,38 @@ def _sync_active_device_counts(db: Session) -> None:
             if active_devices
             else None
         )
+    db.commit()
+
+
+def _migrate_legacy_expired_credentials(db: Session) -> None:
+    """Preserve keys disabled by the old irreversible expiry behavior."""
+    expired_subscriptions = list(
+        db.scalars(
+            select(Subscription).where(
+                Subscription.status == SubscriptionStatus.EXPIRED,
+                Subscription.expires_at.is_not(None),
+            )
+        )
+    )
+    for subscription in expired_subscriptions:
+        expiry = as_utc(subscription.expires_at)
+        if not expiry:
+            continue
+        credentials = list(
+            db.scalars(
+                select(VpnCredential).where(
+                    VpnCredential.subscription_id == subscription.id,
+                    VpnCredential.status == CredentialStatus.REVOKED,
+                    VpnCredential.revoked_at.is_not(None),
+                )
+            )
+        )
+        for credential in credentials:
+            revoked_at = as_utc(credential.revoked_at)
+            if revoked_at and revoked_at >= expiry:
+                credential.status = CredentialStatus.SUSPENDED
+                credential.suspended_at = credential.revoked_at
+                credential.revoked_at = None
     db.commit()
 
 
@@ -250,7 +285,35 @@ def activate_payment(db: Session, payment: Payment) -> Subscription:
     )
     if subscription:
         settle_subscription(db, subscription, now=now)
-    if not subscription or subscription.status != SubscriptionStatus.ACTIVE:
+    if not subscription:
+        subscription = db.scalar(
+            select(Subscription)
+            .where(
+                Subscription.user_id == payment.user_id,
+                Subscription.status == SubscriptionStatus.EXPIRED,
+            )
+            .order_by(Subscription.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    if subscription and subscription.status == SubscriptionStatus.EXPIRED:
+        previous_expiry = as_utc(subscription.expires_at)
+        if previous_expiry:
+            legacy_expired_credentials = list(
+                db.scalars(
+                    select(VpnCredential).where(
+                        VpnCredential.subscription_id == subscription.id,
+                        VpnCredential.status == CredentialStatus.REVOKED,
+                    )
+                )
+            )
+            for credential in legacy_expired_credentials:
+                revoked_at = as_utc(credential.revoked_at)
+                if revoked_at and revoked_at >= previous_expiry:
+                    credential.status = CredentialStatus.SUSPENDED
+                    credential.suspended_at = credential.revoked_at
+                    credential.revoked_at = None
+    if not subscription:
         subscription = Subscription(
             user_id=payment.user_id,
             plan_id=payment.plan_id,
@@ -263,7 +326,18 @@ def activate_payment(db: Session, payment: Payment) -> Subscription:
         db.add(subscription)
         db.flush()
     user.balance_units += _units_for_payment(payment.amount_kopecks)
+    billable_devices = db.scalar(
+        select(func.count(VpnCredential.id)).where(
+            VpnCredential.subscription_id == subscription.id,
+            VpnCredential.status.in_(
+                [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
+            ),
+        )
+    ) or 0
+    subscription.plan_id = payment.plan_id
     subscription.status = SubscriptionStatus.ACTIVE
+    subscription.device_limit = billable_devices
+    subscription.last_billed_at = now
     subscription.expires_at = (
         now + timedelta(seconds=user.balance_units // subscription.device_limit)
         if subscription.device_limit
@@ -303,7 +377,9 @@ def _allocate_ip(db: Session, settings: Settings, provisioner: Provisioner) -> s
     used = set(
         db.scalars(
             select(VpnCredential.assigned_ip).where(
-                VpnCredential.status == CredentialStatus.ACTIVE
+                VpnCredential.status.in_(
+                    [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
+                )
             )
         ).all()
     )
@@ -337,7 +413,9 @@ def create_credential(
     count = db.scalar(
         select(func.count(VpnCredential.id)).where(
             VpnCredential.subscription_id == subscription.id,
-            VpnCredential.status == CredentialStatus.ACTIVE,
+            VpnCredential.status.in_(
+                [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
+            ),
         )
     ) or 0
     if count >= settings.max_devices_per_subscription:
@@ -397,6 +475,73 @@ def ensure_first_credential(
     )
 
 
+def restore_suspended_credentials(
+    db: Session,
+    *,
+    subscription: Subscription,
+    settings: Settings,
+    provisioner: Provisioner,
+) -> int:
+    """Restore suspended peers with their original keys after a balance top-up."""
+    if (
+        subscription.status != SubscriptionStatus.ACTIVE
+        or subscription.user.balance_units <= 0
+    ):
+        return 0
+    credentials = list(
+        db.scalars(
+            select(VpnCredential).where(
+                VpnCredential.subscription_id == subscription.id,
+                VpnCredential.status == CredentialStatus.SUSPENDED,
+            )
+        )
+    )
+    cipher = ConfigCipher(settings)
+    restored = 0
+    for credential in credentials:
+        try:
+            config = cipher.decrypt(credential.config_encrypted)
+            provisioner.restore(
+                credential.public_key,
+                credential.assigned_ip,
+                config,
+            )
+            credential.rx_offset_bytes = credential.rx_bytes
+            credential.tx_offset_bytes = credential.tx_bytes
+            credential.status = CredentialStatus.ACTIVE
+            credential.suspended_at = None
+            credential.revoked_at = None
+            credential.last_handshake_at = None
+            db.commit()
+            restored += 1
+        except Exception:
+            db.rollback()
+    return restored
+
+
+def reconcile_suspended(
+    db: Session, settings: Settings, provisioner: Provisioner
+) -> int:
+    """Retry peer restoration after transient provisioning failures."""
+    restored = 0
+    subscriptions = list(
+        db.scalars(
+            select(Subscription).where(
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                Subscription.user.has(User.balance_units > 0),
+            )
+        )
+    )
+    for subscription in subscriptions:
+        restored += restore_suspended_credentials(
+            db,
+            subscription=subscription,
+            settings=settings,
+            provisioner=provisioner,
+        )
+    return restored
+
+
 def revoke_credential(
     db: Session, credential: VpnCredential, provisioner: Provisioner
 ) -> None:
@@ -415,13 +560,16 @@ def revoke_credential(
         settle_subscription(db, subscription, now=now)
     provisioner.revoke(credential.public_key)
     credential.status = CredentialStatus.REVOKED
+    credential.suspended_at = None
     credential.revoked_at = now
     db.flush()
     if subscription and subscription.status == SubscriptionStatus.ACTIVE:
         active_devices = db.scalar(
             select(func.count(VpnCredential.id)).where(
                 VpnCredential.subscription_id == subscription.id,
-                VpnCredential.status == CredentialStatus.ACTIVE,
+                VpnCredential.status.in_(
+                    [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
+                ),
             )
         ) or 0
         subscription.device_limit = active_devices
@@ -437,9 +585,9 @@ def revoke_credential(
 def delete_credential(
     db: Session, credential: VpnCredential, provisioner: Provisioner
 ) -> None:
-    """Revoke an active peer before permanently removing its database record."""
+    """Disable a live peer before permanently removing its database record."""
     credential_id = credential.id
-    if credential.status == CredentialStatus.ACTIVE:
+    if credential.status != CredentialStatus.REVOKED:
         revoke_credential(db, credential, provisioner)
     stored = db.get(VpnCredential, credential_id)
     if stored:
@@ -488,8 +636,8 @@ def refresh_peer_stats(db: Session, provisioner: Provisioner) -> int:
         peer = stats.get(credential.public_key)
         if peer:
             credential.last_handshake_at = peer.last_handshake_at
-            credential.rx_bytes = peer.rx_bytes
-            credential.tx_bytes = peer.tx_bytes
+            credential.rx_bytes = credential.rx_offset_bytes + peer.rx_bytes
+            credential.tx_bytes = credential.tx_offset_bytes + peer.tx_bytes
             updated += 1
     db.commit()
     return updated
@@ -521,8 +669,10 @@ def reconcile_expired(db: Session, provisioner: Provisioner) -> int:
             )
             for credential in credentials:
                 provisioner.revoke(credential.public_key)
-                credential.status = CredentialStatus.REVOKED
-                credential.revoked_at = now
+                credential.status = CredentialStatus.SUSPENDED
+                credential.suspended_at = now
+                credential.revoked_at = None
+                credential.last_handshake_at = None
             db.commit()
             reconciled += 1
         except Exception:

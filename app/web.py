@@ -36,6 +36,7 @@ from app.services.lifecycle import (
     delete_customer_account,
     ensure_first_credential,
     refresh_peer_stats,
+    restore_suspended_credentials,
     revoke_credential,
     settle_subscription,
 )
@@ -241,6 +242,22 @@ def customer_dashboard(request: Request, db: Db) -> Response:
             select(Payment).where(Payment.user_id == user.id).order_by(desc(Payment.created_at)).limit(10)
         )
     )
+    resumable_subscription = next(
+        (item for item in subscriptions if item.status == SubscriptionStatus.ACTIVE),
+        next(
+            (item for item in subscriptions if item.status == SubscriptionStatus.EXPIRED),
+            None,
+        ),
+    )
+    suspended_devices = (
+        sum(
+            1
+            for credential in resumable_subscription.credentials
+            if credential.status == CredentialStatus.SUSPENDED
+        )
+        if resumable_subscription
+        else 0
+    )
     return _render(
         request,
         "dashboard.html",
@@ -253,6 +270,7 @@ def customer_dashboard(request: Request, db: Db) -> Response:
         now=utcnow(),
         is_connected=_is_connected,
         format_bytes=_format_bytes,
+        suspended_devices=suspended_devices,
     )
 
 
@@ -305,6 +323,12 @@ def mock_payment_confirm(
     if not payment or payment.user_id != user.id:
         raise HTTPException(404, "Платеж не найден")
     subscription = activate_payment(db, payment)
+    restore_suspended_credentials(
+        db,
+        subscription=subscription,
+        settings=request.app.state.settings,
+        provisioner=request.app.state.provisioner,
+    )
     ensure_first_credential(
         db,
         subscription=subscription,
@@ -325,6 +349,12 @@ async def yookassa_webhook(request: Request, db: Db) -> JSONResponse:
     verified = request.app.state.payment_provider.verify(provider_id)
     subscription = apply_verified_payment(db, verified)
     if subscription:
+        restore_suspended_credentials(
+            db,
+            subscription=subscription,
+            settings=request.app.state.settings,
+            provisioner=request.app.state.provisioner,
+        )
         ensure_first_credential(
             db,
             subscription=subscription,
@@ -368,11 +398,20 @@ def _owned_credential(request: Request, db: Session, credential_id: str) -> VpnC
     return credential
 
 
+def _require_active_credential(credential: VpnCredential) -> None:
+    if credential.status == CredentialStatus.SUSPENDED:
+        raise HTTPException(
+            423,
+            "Ключ временно приостановлен и снова заработает после пополнения баланса",
+        )
+    if credential.status != CredentialStatus.ACTIVE:
+        raise HTTPException(410, "Ключ отозван")
+
+
 @router.get("/app/devices/{credential_id}/config")
 def download_config(request: Request, db: Db, credential_id: str) -> Response:
     credential = _owned_credential(request, db, credential_id)
-    if credential.status != CredentialStatus.ACTIVE:
-        raise HTTPException(410, "Ключ отозван")
+    _require_active_credential(credential)
     config = ConfigCipher(request.app.state.settings).decrypt(credential.config_encrypted)
     safe_name = "amnezia-" + credential.id[:8] + ".conf"
     return Response(
@@ -389,8 +428,7 @@ def download_config(request: Request, db: Db, credential_id: str) -> Response:
 @router.get("/app/devices/{credential_id}/qr")
 def credential_qr(request: Request, db: Db, credential_id: str) -> StreamingResponse:
     credential = _owned_credential(request, db, credential_id)
-    if credential.status != CredentialStatus.ACTIVE:
-        raise HTTPException(410, "Ключ отозван")
+    _require_active_credential(credential)
     config = ConfigCipher(request.app.state.settings).decrypt(credential.config_encrypted)
     image = qrcode.make(config)
     output = io.BytesIO()
@@ -406,8 +444,7 @@ def credential_qr(request: Request, db: Db, credential_id: str) -> StreamingResp
 @router.get("/app/devices/{credential_id}/key")
 def credential_text_key(request: Request, db: Db, credential_id: str) -> Response:
     credential = _owned_credential(request, db, credential_id)
-    if credential.status != CredentialStatus.ACTIVE:
-        raise HTTPException(410, "Ключ отозван")
+    _require_active_credential(credential)
     settings = request.app.state.settings
     config = ConfigCipher(settings).decrypt(credential.config_encrypted)
     key = build_amnezia_vpn_key(

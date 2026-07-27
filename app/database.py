@@ -47,9 +47,20 @@ def migrate_schema(db_engine: Engine) -> None:
             "device_limit": "INTEGER NOT NULL DEFAULT 1",
             "last_billed_at": datetime_type,
         },
+        "vpn_credentials": {
+            "rx_offset_bytes": "BIGINT NOT NULL DEFAULT 0",
+            "tx_offset_bytes": "BIGINT NOT NULL DEFAULT 0",
+            "suspended_at": datetime_type,
+        },
     }
     with db_engine.begin() as connection:
+        if dialect == "postgresql" and "vpn_credentials" in tables:
+            connection.execute(
+                text("ALTER TYPE credentialstatus ADD VALUE IF NOT EXISTS 'SUSPENDED'")
+            )
         for table, columns in additions.items():
+            if table not in tables:
+                continue
             existing = {column["name"] for column in inspect(connection).get_columns(table)}
             for name, definition in columns.items():
                 if name not in existing:

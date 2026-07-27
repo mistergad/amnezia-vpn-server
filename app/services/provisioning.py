@@ -35,6 +35,10 @@ class Provisioner:
     def provision(self, assigned_ip: str) -> ProvisionedCredential:
         raise NotImplementedError
 
+    def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
+        """Restore an existing peer without changing the client-side key."""
+        raise NotImplementedError
+
     def revoke(self, public_key: str) -> None:
         raise NotImplementedError
 
@@ -86,6 +90,9 @@ class MockProvisioner(Provisioner):
 
     def revoke(self, public_key: str) -> None:
         self._peers.pop(public_key, None)
+
+    def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
+        self._peers[public_key] = assigned_ip
 
     def assigned_ips(self) -> set[str]:
         return set(self._peers.values())
@@ -218,6 +225,28 @@ class NativeAmneziaWGProvisioner(Provisioner):
 
     def revoke(self, public_key: str) -> None:
         self._run(["set", self.settings.awg_interface, "peer", public_key, "remove"])
+        self._save()
+
+    def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            parser.read_string(config)
+            preshared_key = parser.get("Peer", "PresharedKey").strip()
+        except (configparser.Error, KeyError) as exc:
+            raise ProvisioningError(
+                "Cannot restore peer: PresharedKey is missing from the client config"
+            ) from exc
+        if not preshared_key:
+            raise ProvisioningError(
+                "Cannot restore peer: PresharedKey is empty in the client config"
+            )
+        self._run(
+            [
+                "set", self.settings.awg_interface, "peer", public_key,
+                "preshared-key", "/dev/stdin", "allowed-ips", f"{assigned_ip}/32",
+            ],
+            input_text=preshared_key + "\n",
+        )
         self._save()
 
     def stats(self) -> dict[str, PeerStats]:

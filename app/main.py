@@ -17,6 +17,7 @@ from app.database import Base, SessionLocal, engine, migrate_schema
 from app.services.lifecycle import (
     BusinessRuleError,
     reconcile_expired,
+    reconcile_suspended,
     refresh_peer_stats,
     seed_data,
 )
@@ -34,6 +35,12 @@ async def _reconciler(app: FastAPI) -> None:
         await asyncio.sleep(interval)
         with SessionLocal() as db:
             try:
+                await asyncio.to_thread(
+                    reconcile_suspended,
+                    db,
+                    app.state.settings,
+                    app.state.provisioner,
+                )
                 await asyncio.to_thread(refresh_peer_stats, db, app.state.provisioner)
                 await asyncio.to_thread(reconcile_expired, db, app.state.provisioner)
             except Exception:
