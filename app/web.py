@@ -488,6 +488,7 @@ def admin_client(request: Request, db: Db, user_id: str) -> Response:
         db,
         client=_client_summary(customer),
         credentials=sorted(customer.credentials, key=lambda item: item.created_at, reverse=True),
+        format_bytes=_format_bytes,
     )
 
 

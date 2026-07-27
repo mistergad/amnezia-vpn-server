@@ -137,6 +137,10 @@ td small { display: block; margin-top: 4px; }
 .admin-clients-card { margin-top: 5px; }
 .client-balance { color: var(--green); font-size: 16px; font-weight: 800; white-space: nowrap; }
 .device-count { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--panel-2); font-weight: 800; }
+.traffic-value, .traffic-total { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.traffic-down { color: var(--green); }
+.traffic-up { color: var(--muted); }
+.traffic-total { font-size: 14px; }
 .client-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; white-space: nowrap; }
 .client-actions form { margin: 0; }
 .compact-button { padding: 8px 12px; font-size: 12px; }

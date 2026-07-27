@@ -234,6 +234,9 @@ def test_admin_can_delete_device_and_customer_account() -> None:
             customer_id = customer.id
             credential_id = credential.id
             subscription_id = subscription.id
+            credential.rx_bytes = 1024
+            credential.tx_bytes = 2048
+            db.commit()
 
         dashboard = client.get("/app")
         added_device = client.post(
@@ -268,6 +271,11 @@ def test_admin_can_delete_device_and_customer_account() -> None:
         assert client_page.status_code == 200
         assert "Первое устройство" in client_page.text
         assert "Телефон" in client_page.text
+        assert "Получено" in client_page.text
+        assert "Отправлено" in client_page.text
+        assert "↓ 1.0 КБ" in client_page.text
+        assert "↑ 2.0 КБ" in client_page.text
+        assert "3.0 КБ" in client_page.text
         deleted_device = client.post(
             f"/admin/devices/{credential_id}/delete",
             data={"csrf_token": csrf(client_page.text)},
