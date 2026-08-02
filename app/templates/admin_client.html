@@ -7,7 +7,14 @@
     <span class="eyebrow">Управление клиентом</span>
     <h1>{{ client.user.email }}</h1>
   </div>
-  <span class="connection {{ client.status_class }}">{{ client.status_label }}</span>
+  <div class="client-head-actions">
+    <form method="post" action="/admin/refresh">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="return_to" value="/admin/clients/{{ client.user.id }}">
+      <button class="ghost-button" type="submit">Обновить скорость</button>
+    </form>
+    <span class="connection {{ client.status_class }}">{{ client.status_label }}</span>
+  </div>
 </section>
 
 <section class="shell client-summary-grid">
@@ -49,8 +56,14 @@
               <span class="connection revoked">Отозвано</span>
             {% endif %}
           </td>
-          <td><span class="traffic-value traffic-down">↓ {{ format_bytes(item.rx_bytes) }}</span></td>
-          <td><span class="traffic-value traffic-up">↑ {{ format_bytes(item.tx_bytes) }}</span></td>
+          <td>
+            <span class="traffic-value traffic-down">↓ {{ format_bytes(item.tx_bytes) }}</span>
+            <small class="traffic-rate">Скорость: {{ format_bitrate(item.tx_rate_bps) }}</small>
+          </td>
+          <td>
+            <span class="traffic-value traffic-up">↑ {{ format_bytes(item.rx_bytes) }}</span>
+            <small class="traffic-rate">Скорость: {{ format_bitrate(item.rx_rate_bps) }}</small>
+          </td>
           <td><strong class="traffic-total">{{ format_bytes(item.rx_bytes + item.tx_bytes) }}</strong></td>
           <td><span class="nowrap">{{ item.created_at.strftime('%d.%m.%Y') }}</span></td>
           <td>

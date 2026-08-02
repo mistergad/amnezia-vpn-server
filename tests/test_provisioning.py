@@ -60,6 +60,9 @@ H4 = 4
         awg_endpoint="vpn.example.test:443",
         awg_save_config=False,
         awg_i1="<r 2><b 0x0102>",
+        awg_rate_limit_enabled=True,
+        awg_download_limit_mbps=10,
+        awg_upload_limit_mbps=8,
     )
     provisioner = FakeNativeProvisioner(settings)
     issued = provisioner.provision("10.8.1.9")
@@ -71,6 +74,12 @@ H4 = 4
     set_call = next(call for call in provisioner.calls if call[0][:1] == ["set"])
     assert "/dev/stdin" in set_call[0]
     assert set_call[1] == "client-psk\n"
+    rate_call = next(
+        call
+        for call in provisioner.calls
+        if call[2] == "/opt/amnezia/traffic-limit.sh"
+    )
+    assert rate_call[0] == ["apply", "awg0", "10.8.1.9", "9", "10", "8"]
 
     provisioner.restore(issued.public_key, "10.8.1.9", issued.config)
     restore_call = [
@@ -79,6 +88,13 @@ H4 = 4
     ][-1]
     assert restore_call[0][-2:] == ["allowed-ips", "10.8.1.9/32"]
     assert restore_call[1] == "client-psk\n"
+
+    provisioner.revoke(issued.public_key, "10.8.1.9")
+    assert provisioner.calls[-1] == (
+        ["remove", "awg0", "9"],
+        None,
+        "/opt/amnezia/traffic-limit.sh",
+    )
 
 
 def test_native_stats_parser() -> None:

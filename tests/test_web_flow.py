@@ -190,6 +190,7 @@ def test_admin_can_open_client_api() -> None:
         assert "Устройства" in admin_page.text
         assert "Статус" in admin_page.text
         assert "Дата окончания" in admin_page.text
+        assert "Скорость" in admin_page.text
         assert "Последняя связь" not in admin_page.text
         assert "Трафик" not in admin_page.text
         api_response = client.get("/api/v1/admin/clients")
@@ -202,6 +203,8 @@ def test_admin_can_open_client_api() -> None:
                 "email",
                 "balance_kopecks",
                 "active_devices",
+                "download_rate_bps",
+                "upload_rate_bps",
                 "status",
                 "expires_at",
             }
@@ -209,6 +212,8 @@ def test_admin_can_open_client_api() -> None:
             if client_data["active_devices"]:
                 assert client_data["expires_at"] is not None
             assert client_data["balance_kopecks"] >= 0
+            assert client_data["download_rate_bps"] >= 0
+            assert client_data["upload_rate_bps"] >= 0
 
 
 def test_expired_key_is_restored_after_balance_topup() -> None:
@@ -368,6 +373,8 @@ def test_admin_can_delete_device_and_customer_account() -> None:
             subscription_id = subscription.id
             credential.rx_bytes = 1024
             credential.tx_bytes = 2048
+            credential.rx_rate_bps = 8_000_000
+            credential.tx_rate_bps = 10_000_000
             db.commit()
 
         dashboard = client.get("/app")
@@ -405,9 +412,12 @@ def test_admin_can_delete_device_and_customer_account() -> None:
         assert "Телефон" in client_page.text
         assert "Получено" in client_page.text
         assert "Отправлено" in client_page.text
-        assert "↓ 1.0 КБ" in client_page.text
-        assert "↑ 2.0 КБ" in client_page.text
+        assert "Скорость" in client_page.text
+        assert "↓ 2.0 КБ" in client_page.text
+        assert "↑ 1.0 КБ" in client_page.text
         assert "3.0 КБ" in client_page.text
+        assert "Скорость: 10.0 Мбит/с" in client_page.text
+        assert "Скорость: 8.0 Мбит/с" in client_page.text
         deleted_device = client.post(
             f"/admin/devices/{credential_id}/delete",
             data={"csrf_token": csrf(client_page.text)},

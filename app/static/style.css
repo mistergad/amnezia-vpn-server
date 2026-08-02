@@ -141,6 +141,10 @@ td small { display: block; margin-top: 4px; }
 .traffic-down { color: var(--green); }
 .traffic-up { color: var(--muted); }
 .traffic-total { font-size: 14px; }
+.traffic-speed { display: grid; gap: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.traffic-rate { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.client-head-actions { display: flex; align-items: center; gap: 12px; }
+.client-head-actions form { margin: 0; }
 .client-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; white-space: nowrap; }
 .client-actions form { margin: 0; }
 .compact-button { padding: 8px 12px; font-size: 12px; }

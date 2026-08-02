@@ -133,6 +133,11 @@ class VpnCredential(Base):
     last_handshake_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rx_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     tx_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    rx_rate_bps: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    tx_rate_bps: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    traffic_sampled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     rx_offset_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     tx_offset_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

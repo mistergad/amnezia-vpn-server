@@ -24,6 +24,8 @@ DOMAIN="${DOMAIN:-}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 AWG_PORT="${AWG_PORT:-55424}"
+AWG_DOWNLOAD_LIMIT_MBIT="${AWG_DOWNLOAD_LIMIT_MBIT:-}"
+AWG_UPLOAD_LIMIT_MBIT="${AWG_UPLOAD_LIMIT_MBIT:-}"
 PUBLIC_INTERFACE="${PUBLIC_INTERFACE:-eth0}"
 IP_TLS_MODE="${IP_TLS_MODE:-public}"
 HOST_IS_IP=false
@@ -47,6 +49,8 @@ Options:
   --admin-email EMAIL          Initial administrator (default: derived from HOST)
   --admin-password PASSWORD    At least 12 safe ASCII characters; generated if omitted
   --awg-port PORT              Public AWG2 UDP port (default: 55424)
+  --download-limit-mbps RATE   Per-device download limit (default: 10)
+  --upload-limit-mbps RATE     Per-device upload limit (default: 8)
   --ip-tls-mode MODE           TLS for an IPv4 host: public or internal (default: public)
   -h, --help                   Show this help
 
@@ -64,6 +68,8 @@ while (($#)); do
     --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
     --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
     --awg-port) AWG_PORT="${2:-}"; shift 2 ;;
+    --download-limit-mbps) AWG_DOWNLOAD_LIMIT_MBIT="${2:-}"; shift 2 ;;
+    --upload-limit-mbps) AWG_UPLOAD_LIMIT_MBIT="${2:-}"; shift 2 ;;
     --ip-tls-mode) IP_TLS_MODE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1" ;;
@@ -75,6 +81,11 @@ read_env_value() {
   [[ -f "$ENV_FILE" ]] || return 0
   sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
 }
+
+AWG_DOWNLOAD_LIMIT_MBIT="${AWG_DOWNLOAD_LIMIT_MBIT:-$(read_env_value AWG_DOWNLOAD_LIMIT_MBPS)}"
+AWG_UPLOAD_LIMIT_MBIT="${AWG_UPLOAD_LIMIT_MBIT:-$(read_env_value AWG_UPLOAD_LIMIT_MBPS)}"
+AWG_DOWNLOAD_LIMIT_MBIT="${AWG_DOWNLOAD_LIMIT_MBIT:-10}"
+AWG_UPLOAD_LIMIT_MBIT="${AWG_UPLOAD_LIMIT_MBIT:-8}"
 
 is_ipv4() {
   local address="$1" first second third fourth extra octet
@@ -147,6 +158,12 @@ else
 fi
 [[ "$AWG_PORT" =~ ^[0-9]+$ ]] && ((AWG_PORT >= 1024 && AWG_PORT <= 65535)) || \
   die "--awg-port must be between 1024 and 65535."
+[[ "$AWG_DOWNLOAD_LIMIT_MBIT" =~ ^[0-9]+$ ]] \
+  && ((AWG_DOWNLOAD_LIMIT_MBIT >= 1 && AWG_DOWNLOAD_LIMIT_MBIT <= 10000)) || \
+  die "--download-limit-mbps must be between 1 and 10000."
+[[ "$AWG_UPLOAD_LIMIT_MBIT" =~ ^[0-9]+$ ]] \
+  && ((AWG_UPLOAD_LIMIT_MBIT >= 1 && AWG_UPLOAD_LIMIT_MBIT <= 10000)) || \
+  die "--upload-limit-mbps must be between 1 and 10000."
 [[ "$IP_TLS_MODE" == "public" || "$IP_TLS_MODE" == "internal" ]] || \
   die "--ip-tls-mode must be public or internal."
 
@@ -168,6 +185,8 @@ for required_file in \
   "$VENDOR_DIR/awg2/configure_container.sh" \
   "$VENDOR_DIR/awg2/run_container.sh" \
   "$VENDOR_DIR/awg2/start.sh" \
+  "$SCRIPT_DIR/awg2-start.sh" \
+  "$SCRIPT_DIR/awg2-traffic-limit.sh" \
   "$VENDOR_DIR/build_container.sh" \
   "$VENDOR_DIR/prepare_host.sh" \
   "$VENDOR_DIR/LICENSE"; do
@@ -240,6 +259,27 @@ wait_for_awg() {
   return 1
 }
 
+install_awg_traffic_control() {
+  log "Configuring per-device AWG2 limits (${AWG_DOWNLOAD_LIMIT_MBIT} Mbit/s down, ${AWG_UPLOAD_LIMIT_MBIT} Mbit/s up)"
+  install -d -m 0755 "$GENERATED_DIR"
+  if ! docker exec "$CONTAINER_NAME" sh -lc 'command -v tc >/dev/null 2>&1'; then
+    docker exec "$CONTAINER_NAME" apk add --no-cache iproute2
+  fi
+  export AWG_SUBNET_IP AWG_SUBNET_CIDR AWG_DOWNLOAD_LIMIT_MBIT AWG_UPLOAD_LIMIT_MBIT
+  export WIREGUARD_SUBNET_CIDR="$AWG_SUBNET_CIDR"
+  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_DOWNLOAD_LIMIT_MBIT} ${AWG_UPLOAD_LIMIT_MBIT}' \
+    < "$SCRIPT_DIR/awg2-start.sh" \
+    > "$GENERATED_DIR/start.sh"
+  chmod 0755 "$GENERATED_DIR/start.sh"
+  install -m 0755 "$SCRIPT_DIR/awg2-traffic-limit.sh" \
+    "$GENERATED_DIR/traffic-limit.sh"
+  docker cp "$GENERATED_DIR/traffic-limit.sh" \
+    "$CONTAINER_NAME:/opt/amnezia/traffic-limit.sh"
+  docker cp "$GENERATED_DIR/start.sh" "$CONTAINER_NAME:/opt/amnezia/start.sh"
+  docker exec "$CONTAINER_NAME" chmod 0755 \
+    /opt/amnezia/traffic-limit.sh /opt/amnezia/start.sh
+}
+
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
   log "Reusing the existing $CONTAINER_NAME container without replacing its peers"
   docker start "$CONTAINER_NAME" >/dev/null || true
@@ -249,6 +289,10 @@ if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
     warn "Existing AWG2 listens on UDP $detected_port; using it instead of $AWG_PORT."
     AWG_PORT="$detected_port"
   fi
+  install_awg_traffic_control
+  docker exec "$CONTAINER_NAME" /opt/amnezia/traffic-limit.sh sync \
+    awg0 "$AWG_SUBNET_IP/$AWG_SUBNET_CIDR" \
+    "$AWG_DOWNLOAD_LIMIT_MBIT" "$AWG_UPLOAD_LIMIT_MBIT"
 else
   log "Building AWG2 with pinned official AmneziaVPN server scripts"
   generate_awg_parameters
@@ -275,16 +319,12 @@ else
     < "$VENDOR_DIR/awg2/configure_container.sh" \
     > "$GENERATED_DIR/configure_container.sh"
   sed -i 's/^# I1 =/I1 =/' "$GENERATED_DIR/configure_container.sh"
-  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR}' \
-    < "$VENDOR_DIR/awg2/start.sh" \
-    > "$GENERATED_DIR/start.sh"
-  chmod 0755 "$GENERATED_DIR/configure_container.sh" "$GENERATED_DIR/start.sh"
+  chmod 0755 "$GENERATED_DIR/configure_container.sh"
 
   docker cp "$GENERATED_DIR/configure_container.sh" \
     "$CONTAINER_NAME:/opt/amnezia/configure_container.sh"
   docker exec "$CONTAINER_NAME" bash /opt/amnezia/configure_container.sh
-  docker cp "$GENERATED_DIR/start.sh" "$CONTAINER_NAME:/opt/amnezia/start.sh"
-  docker exec "$CONTAINER_NAME" chmod 0755 /opt/amnezia/start.sh
+  install_awg_traffic_control
   docker restart "$CONTAINER_NAME" >/dev/null
   wait_for_awg || die "AWG2 failed to start; inspect: docker logs $CONTAINER_NAME"
 fi
@@ -378,6 +418,10 @@ AWG_BINARY=$AWG_BIN
 AWG_QUICK_BINARY=$AWG_QUICK_BIN
 AWG_CONFIG_PATH=/opt/amnezia/awg/awg0.conf
 AWG_SAVE_CONFIG=true
+AWG_RATE_LIMIT_ENABLED=true
+AWG_RATE_LIMIT_BINARY=/opt/amnezia/traffic-limit.sh
+AWG_DOWNLOAD_LIMIT_MBPS=$AWG_DOWNLOAD_LIMIT_MBIT
+AWG_UPLOAD_LIMIT_MBPS=$AWG_UPLOAD_LIMIT_MBIT
 AWG_I1=$AWG_I1_VALUE
 AWG_I2=$AWG_I2_VALUE
 AWG_I3=$AWG_I3_VALUE
@@ -391,7 +435,8 @@ rm -f "$ENV_FILE.new"
 
 cat > /etc/sudoers.d/amnezia-service <<EOF
 Cmnd_Alias AMNEZIA_SERVICE_PEERS = $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_BIN *, \\
-                                    $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_QUICK_BIN save /opt/amnezia/awg/awg0.conf
+                                    $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_QUICK_BIN save /opt/amnezia/awg/awg0.conf, \\
+                                    $DOCKER_BIN exec -i $CONTAINER_NAME /opt/amnezia/traffic-limit.sh *
 $APP_USER ALL=(root) NOPASSWD: AMNEZIA_SERVICE_PEERS
 EOF
 chmod 0440 /etc/sudoers.d/amnezia-service

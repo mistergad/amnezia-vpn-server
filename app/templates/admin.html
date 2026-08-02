@@ -3,6 +3,11 @@
 {% block content %}
 <section class="shell dashboard-head">
   <div><span class="eyebrow">Панель управления</span><h1>Клиенты</h1></div>
+  <form method="post" action="/admin/refresh">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="return_to" value="/admin">
+    <button class="ghost-button" type="submit">Обновить скорость</button>
+  </form>
 </section>
 
 <section class="shell table-card admin-clients-card">
@@ -12,7 +17,7 @@
   <div class="table-scroll">
     <table>
       <thead>
-        <tr><th>Клиент</th><th>Баланс</th><th>Устройства</th><th>Статус</th><th>Дата окончания</th><th></th></tr>
+        <tr><th>Клиент</th><th>Баланс</th><th>Устройства</th><th>Скорость</th><th>Статус</th><th>Дата окончания</th><th></th></tr>
       </thead>
       <tbody>
       {% for item in clients %}
@@ -20,6 +25,12 @@
           <td><strong>{{ item.user.email }}</strong></td>
           <td><span class="client-balance">{{ '%.2f'|format(item.balance_kopecks / 100) }} ₽</span></td>
           <td><span class="device-count">{{ item.active_devices }}</span></td>
+          <td>
+            <div class="traffic-speed">
+              <span class="traffic-down">↓ {{ format_bitrate(item.download_rate_bps) }}</span>
+              <span class="traffic-up">↑ {{ format_bitrate(item.upload_rate_bps) }}</span>
+            </div>
+          </td>
           <td><span class="connection {{ item.status_class }}">{{ item.status_label }}</span></td>
           <td>
             {% if item.expires_at %}
@@ -40,7 +51,7 @@
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="6" class="empty-cell">Клиентов пока нет</td></tr>
+        <tr><td colspan="7" class="empty-cell">Клиентов пока нет</td></tr>
       {% endfor %}
       </tbody>
     </table>

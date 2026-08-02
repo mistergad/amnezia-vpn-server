@@ -48,6 +48,9 @@ def migrate_schema(db_engine: Engine) -> None:
             "last_billed_at": datetime_type,
         },
         "vpn_credentials": {
+            "rx_rate_bps": "BIGINT NOT NULL DEFAULT 0",
+            "tx_rate_bps": "BIGINT NOT NULL DEFAULT 0",
+            "traffic_sampled_at": datetime_type,
             "rx_offset_bytes": "BIGINT NOT NULL DEFAULT 0",
             "tx_offset_bytes": "BIGINT NOT NULL DEFAULT 0",
             "suspended_at": datetime_type,

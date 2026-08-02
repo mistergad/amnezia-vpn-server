@@ -12,7 +12,8 @@
 - автоматическая выдача первого `.conf`, QR и гостевого текстового `vpn://`-ключа после оплаты;
 - шифрование конфигураций в базе с Fernet;
 - отдельный peer и IP для каждого устройства, отзыв доступа без перезапуска сервера;
-- админка: клиент, устройство, IP, handshake, трафик, статус и отзыв;
+- админка: клиент, устройство, IP, handshake, накопленный трафик, текущая
+  скорость загрузки/отдачи, статус и отзыв;
 - временная приостановка ключей при нулевом балансе и автоматическое
   восстановление тех же ключей после пополнения;
 - PostgreSQL для production, SQLite по умолчанию для локального запуска;
@@ -37,6 +38,10 @@
 Ручной отзыв или удаление устройства по-прежнему безвозвратны. Старые
 оплаченные периоды при обновлении автоматически конвертируются в баланс без
 потери оставшегося времени.
+
+Скорость в админке рассчитывается как средняя между двумя последовательными
+опросами AWG2. Фоновый интервал по умолчанию — 60 секунд; кнопка «Обновить
+скорость» позволяет выполнить дополнительный замер вручную.
 
 ## Быстрый локальный запуск
 
@@ -100,7 +105,9 @@ sudo bash deploy/vps-bootstrap.sh \
   --host vpn.example.com \
   --admin-email admin@example.com \
   --admin-password 'Strong-Password-2026!' \
-  --awg-port 55424
+  --awg-port 55424 \
+  --download-limit-mbps 10 \
+  --upload-limit-mbps 8
 ```
 
 Если автоматическое определение невозможно из-за NAT или нескольких адресов,
@@ -132,7 +139,7 @@ sudo bash deploy/vps-bootstrap.sh --ip-tls-mode internal
 `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt` не импортирован
 в доверенные центры сертификации администраторского устройства.
 
-Bootstrap автоматически устанавливает Docker, PostgreSQL, Caddy и systemd-службу, собирает официальный контейнер AWG2, создает БД, секреты и HTTPS-конфигурацию. Скрипт можно запускать повторно: существующий `amnezia-awg2` не пересоздается, его peer-ключи сохраняются, а панель учитывает уже занятые на живом интерфейсе IP.
+Bootstrap автоматически устанавливает Docker, PostgreSQL, Caddy и systemd-службу, собирает официальный контейнер AWG2, создает БД, секреты и HTTPS-конфигурацию. Для каждого устройства по внутреннему VPN-IP настраиваются лимиты `10 Мбит/с` на загрузку и `8 Мбит/с` на отдачу; значения можно изменить параметрами `--download-limit-mbps` и `--upload-limit-mbps`. Скрипт можно запускать повторно: существующий `amnezia-awg2` не пересоздается, его peer-ключи сохраняются, а ограничения синхронизируются со всеми живыми peer.
 
 Серверные скрипты AWG2 перенесены из `amnezia-vpn/amnezia-client` и зафиксированы на commit `06d219b92bfa7e7e8c43cca6e72e354d304b42a7`; происхождение и GPL-3.0 лицензия описаны в `deploy/vendor/amnezia-client/UPSTREAM.md`. Это убирает интерактивную установку через десктопный клиент и не позволяет будущему изменению репозитория незаметно поменять deploy.
 
@@ -149,6 +156,8 @@ sudo systemctl status amnezia-service caddy
 sudo journalctl -u amnezia-service -f
 sudo docker exec amnezia-awg2 awg show awg0
 sudo docker exec amnezia-awg2 cat /opt/amnezia/awg/awg0.conf
+sudo docker exec amnezia-awg2 tc -s class show dev awg0
+sudo docker exec amnezia-awg2 tc -s filter show dev awg0 parent ffff:
 ```
 
 Для резервной копии нужны PostgreSQL, `/etc/amnezia-service.env` (особенно `ENCRYPTION_KEY`) и `/opt/amnezia/awg/awg0.conf` из контейнера. HTTPS-сертификат Caddy получает и обновляет автоматически: для домена DNS должен указывать на VPS, а для домена или публичного IP TCP `80/443` должны быть доступны извне.
@@ -185,9 +194,13 @@ sudo docker exec amnezia-awg2 cat /opt/amnezia/awg/awg0.conf
    AWG_QUICK_BINARY=/usr/bin/awg-quick
    AWG_CONFIG_PATH=/opt/amnezia/awg/awg0.conf
    AWG_SAVE_CONFIG=true
+   AWG_RATE_LIMIT_ENABLED=true
+   AWG_RATE_LIMIT_BINARY=/opt/amnezia/traffic-limit.sh
+   AWG_DOWNLOAD_LIMIT_MBPS=10
+   AWG_UPLOAD_LIMIT_MBPS=8
    ```
 
-   Если `AWG_CONFIG_PATH` не существует на хосте, сервис автоматически читает параметры J/S/H/I через `awg showconf` внутри контейнера. Ключ `-i` у `docker exec` обязателен: preshared key передается процессу через stdin и не попадает в аргументы командной строки.
+   Если `AWG_CONFIG_PATH` не существует на хосте, сервис автоматически читает параметры J/S/H/I через `awg showconf` внутри контейнера. Ключ `-i` у `docker exec` обязателен: preshared key передается процессу через stdin и не попадает в аргументы командной строки. Для ручного подключения rate limit также установите `iproute2` в AWG2-контейнер, скопируйте `deploy/awg2-traffic-limit.sh` в `/opt/amnezia/traffic-limit.sh` и разрешите эту команду через sudoers. Автоматический bootstrap выполняет эти действия сам.
 
    Unit намеренно не включает `NoNewPrivileges=true`: этот флаг блокирует разрешенный вызов `sudo`. Объем повышения прав вместо этого ограничен точным списком команд в sudoers.
 

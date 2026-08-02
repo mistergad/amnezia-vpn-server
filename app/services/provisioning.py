@@ -39,7 +39,7 @@ class Provisioner:
         """Restore an existing peer without changing the client-side key."""
         raise NotImplementedError
 
-    def revoke(self, public_key: str) -> None:
+    def revoke(self, public_key: str, assigned_ip: str | None = None) -> None:
         raise NotImplementedError
 
     def stats(self) -> dict[str, PeerStats]:
@@ -88,7 +88,7 @@ class MockProvisioner(Provisioner):
         )
         return ProvisionedCredential(public_key=public_key, config=config)
 
-    def revoke(self, public_key: str) -> None:
+    def revoke(self, public_key: str, assigned_ip: str | None = None) -> None:
         self._peers.pop(public_key, None)
 
     def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
@@ -173,6 +173,48 @@ class NativeAmneziaWGProvisioner(Provisioner):
                 binary=self.settings.awg_quick_binary,
             )
 
+    def _rate_limit_class_minor(self, assigned_ip: str) -> int:
+        network = ipaddress.ip_network(self.settings.awg_subnet, strict=False)
+        address = ipaddress.ip_address(assigned_ip)
+        if network.version != 4 or address.version != 4 or address not in network:
+            raise ProvisioningError(
+                f"Cannot rate-limit {assigned_ip}: address is outside {network}"
+            )
+        minor = int(address) - int(network.network_address)
+        if minor < 2 or minor > 65534:
+            raise ProvisioningError(
+                "Per-device rate limits require an IPv4 subnet with no more "
+                "than 65534 client addresses"
+            )
+        return minor
+
+    def _apply_rate_limit(self, assigned_ip: str) -> None:
+        if not self.settings.awg_rate_limit_enabled:
+            return
+        self._run(
+            [
+                "apply",
+                self.settings.awg_interface,
+                assigned_ip,
+                str(self._rate_limit_class_minor(assigned_ip)),
+                str(self.settings.awg_download_limit_mbps),
+                str(self.settings.awg_upload_limit_mbps),
+            ],
+            binary=self.settings.awg_rate_limit_binary,
+        )
+
+    def _remove_rate_limit(self, assigned_ip: str) -> None:
+        if not self.settings.awg_rate_limit_enabled:
+            return
+        self._run(
+            [
+                "remove",
+                self.settings.awg_interface,
+                str(self._rate_limit_class_minor(assigned_ip)),
+            ],
+            binary=self.settings.awg_rate_limit_binary,
+        )
+
     def assigned_ips(self) -> set[str]:
         output = self._run(["show", self.settings.awg_interface, "allowed-ips"])
         assigned: set[str] = set()
@@ -203,6 +245,7 @@ class NativeAmneziaWGProvisioner(Provisioner):
         )
         try:
             self._save()
+            self._apply_rate_limit(assigned_ip)
             config = _render_client_config(
                 private_key=private_key,
                 assigned_ip=assigned_ip,
@@ -223,9 +266,16 @@ class NativeAmneziaWGProvisioner(Provisioner):
                 pass
             raise
 
-    def revoke(self, public_key: str) -> None:
+    def revoke(self, public_key: str, assigned_ip: str | None = None) -> None:
         self._run(["set", self.settings.awg_interface, "peer", public_key, "remove"])
         self._save()
+        if assigned_ip:
+            try:
+                self._remove_rate_limit(assigned_ip)
+            except ProvisioningError:
+                # A stale tc class is harmless and is removed by the next
+                # container/service synchronization. Peer revocation must win.
+                pass
 
     def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
         parser = configparser.ConfigParser(interpolation=None, strict=False)
@@ -247,7 +297,18 @@ class NativeAmneziaWGProvisioner(Provisioner):
             ],
             input_text=preshared_key + "\n",
         )
-        self._save()
+        try:
+            self._save()
+            self._apply_rate_limit(assigned_ip)
+        except Exception:
+            try:
+                self._run(
+                    ["set", self.settings.awg_interface, "peer", public_key, "remove"]
+                )
+                self._save()
+            except Exception:
+                pass
+            raise
 
     def stats(self) -> dict[str, PeerStats]:
         dump = self._run(["show", self.settings.awg_interface, "dump"])

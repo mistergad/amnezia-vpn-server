@@ -109,6 +109,15 @@ def _format_bytes(value: int) -> str:
     return str(value)
 
 
+def _format_bitrate(value: int) -> str:
+    rate = float(max(0, value))
+    for unit in ("бит/с", "Кбит/с", "Мбит/с", "Гбит/с"):
+        if rate < 1000 or unit == "Гбит/с":
+            return f"{rate:.0f} {unit}" if unit == "бит/с" else f"{rate:.1f} {unit}"
+        rate /= 1000
+    return f"{value} бит/с"
+
+
 def _is_connected(value: datetime | None) -> bool:
     normalized = as_utc(value)
     return bool(normalized and normalized >= utcnow() - timedelta(minutes=3))
@@ -123,6 +132,9 @@ def _client_summary(user: User) -> dict[str, object]:
     active_devices = sum(
         1 for item in user.credentials if item.status == CredentialStatus.ACTIVE
     )
+    active_credentials = [
+        item for item in user.credentials if item.status == CredentialStatus.ACTIVE
+    ]
     if not user.is_active:
         status, status_label, status_class = "disabled", "Отключён", "revoked"
     elif not subscription:
@@ -142,6 +154,10 @@ def _client_summary(user: User) -> dict[str, object]:
         "subscription": subscription,
         "balance_kopecks": balance_kopecks(user),
         "active_devices": active_devices,
+        # AWG reports bytes from the server's point of view: server TX is a
+        # client download, while server RX is a client upload.
+        "download_rate_bps": sum(item.tx_rate_bps for item in active_credentials),
+        "upload_rate_bps": sum(item.rx_rate_bps for item in active_credentials),
         "status": status,
         "status_label": status_label,
         "status_class": status_class,
@@ -502,6 +518,7 @@ def admin_dashboard(request: Request, db: Db) -> Response:
         "admin.html",
         db,
         clients=[_client_summary(customer) for customer in customers],
+        format_bitrate=_format_bitrate,
     )
 
 
@@ -526,6 +543,7 @@ def admin_client(request: Request, db: Db, user_id: str) -> Response:
         client=_client_summary(customer),
         credentials=sorted(customer.credentials, key=lambda item: item.created_at, reverse=True),
         format_bytes=_format_bytes,
+        format_bitrate=_format_bitrate,
     )
 
 
@@ -566,12 +584,20 @@ def admin_delete_client(
 
 @router.post("/admin/refresh")
 def admin_refresh(
-    request: Request, db: Db, csrf_token: Annotated[str, Form()]
+    request: Request,
+    db: Db,
+    csrf_token: Annotated[str, Form()],
+    return_to: Annotated[str, Form()] = "/admin",
 ) -> RedirectResponse:
     _check_csrf(request, csrf_token)
     _require_admin(request, db)
     refresh_peer_stats(db, request.app.state.provisioner)
-    return RedirectResponse("/admin", 303)
+    target = (
+        return_to
+        if return_to == "/admin" or return_to.startswith("/admin/clients/")
+        else "/admin"
+    )
+    return RedirectResponse(target, 303)
 
 
 @router.get("/api/v1/admin/clients")
@@ -591,6 +617,8 @@ def admin_clients_api(request: Request, db: Db) -> JSONResponse:
                 "email": item["user"].email,
                 "balance_kopecks": item["balance_kopecks"],
                 "active_devices": item["active_devices"],
+                "download_rate_bps": item["download_rate_bps"],
+                "upload_rate_bps": item["upload_rate_bps"],
                 "status": item["status"],
                 "expires_at": (
                     as_utc(item["expires_at"]).isoformat()

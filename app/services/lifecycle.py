@@ -448,7 +448,7 @@ def create_credential(
         db.rollback()
         if provisioned is not None:
             try:
-                provisioner.revoke(provisioned.public_key)
+                provisioner.revoke(provisioned.public_key, assigned_ip)
             except Exception:
                 pass
         raise
@@ -512,6 +512,9 @@ def restore_suspended_credentials(
             credential.suspended_at = None
             credential.revoked_at = None
             credential.last_handshake_at = None
+            credential.rx_rate_bps = 0
+            credential.tx_rate_bps = 0
+            credential.traffic_sampled_at = None
             db.commit()
             restored += 1
         except Exception:
@@ -558,10 +561,13 @@ def revoke_credential(
     now = utcnow()
     if subscription:
         settle_subscription(db, subscription, now=now)
-    provisioner.revoke(credential.public_key)
+    provisioner.revoke(credential.public_key, credential.assigned_ip)
     credential.status = CredentialStatus.REVOKED
     credential.suspended_at = None
     credential.revoked_at = now
+    credential.rx_rate_bps = 0
+    credential.tx_rate_bps = 0
+    credential.traffic_sampled_at = None
     db.flush()
     if subscription and subscription.status == SubscriptionStatus.ACTIVE:
         active_devices = db.scalar(
@@ -629,16 +635,53 @@ def delete_customer_account(
 
 def refresh_peer_stats(db: Session, provisioner: Provisioner) -> int:
     stats = provisioner.stats()
+    sampled_at = utcnow()
     updated = 0
     for credential in db.scalars(
         select(VpnCredential).where(VpnCredential.status == CredentialStatus.ACTIVE)
     ):
         peer = stats.get(credential.public_key)
         if peer:
+            previous_rx = credential.rx_bytes
+            previous_tx = credential.tx_bytes
+            current_rx = credential.rx_offset_bytes + peer.rx_bytes
+            current_tx = credential.tx_offset_bytes + peer.tx_bytes
+
+            # AWG counters reset when its interface/container restarts. Move
+            # the last cumulative values into the offsets so totals and speed
+            # never jump backwards after a restart.
+            if current_rx < previous_rx:
+                credential.rx_offset_bytes = previous_rx
+                current_rx = previous_rx + peer.rx_bytes
+            if current_tx < previous_tx:
+                credential.tx_offset_bytes = previous_tx
+                current_tx = previous_tx + peer.tx_bytes
+
+            previous_sample = as_utc(credential.traffic_sampled_at)
+            elapsed = (
+                (sampled_at - previous_sample).total_seconds()
+                if previous_sample
+                else 0
+            )
+            if elapsed > 0:
+                credential.rx_rate_bps = max(
+                    0, int((current_rx - previous_rx) * 8 / elapsed)
+                )
+                credential.tx_rate_bps = max(
+                    0, int((current_tx - previous_tx) * 8 / elapsed)
+                )
+            else:
+                credential.rx_rate_bps = 0
+                credential.tx_rate_bps = 0
             credential.last_handshake_at = peer.last_handshake_at
-            credential.rx_bytes = credential.rx_offset_bytes + peer.rx_bytes
-            credential.tx_bytes = credential.tx_offset_bytes + peer.tx_bytes
+            credential.rx_bytes = current_rx
+            credential.tx_bytes = current_tx
+            credential.traffic_sampled_at = sampled_at
             updated += 1
+        else:
+            credential.rx_rate_bps = 0
+            credential.tx_rate_bps = 0
+            credential.traffic_sampled_at = sampled_at
     db.commit()
     return updated
 
@@ -668,11 +711,14 @@ def reconcile_expired(db: Session, provisioner: Provisioner) -> int:
                 )
             )
             for credential in credentials:
-                provisioner.revoke(credential.public_key)
+                provisioner.revoke(credential.public_key, credential.assigned_ip)
                 credential.status = CredentialStatus.SUSPENDED
                 credential.suspended_at = now
                 credential.revoked_at = None
                 credential.last_handshake_at = None
+                credential.rx_rate_bps = 0
+                credential.tx_rate_bps = 0
+                credential.traffic_sampled_at = None
             db.commit()
             reconciled += 1
         except Exception:

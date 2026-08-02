@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     awg_i3: str | None = None
     awg_i4: str | None = None
     awg_i5: str | None = None
+    awg_rate_limit_enabled: bool = False
+    awg_rate_limit_binary: str = "/opt/amnezia/traffic-limit.sh"
+    awg_download_limit_mbps: int = Field(default=10, ge=1, le=10000)
+    awg_upload_limit_mbps: int = Field(default=8, ge=1, le=10000)
 
     session_https_only: bool = False
     subscription_reconcile_seconds: int = 60
