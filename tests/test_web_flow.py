@@ -378,6 +378,9 @@ def test_admin_can_delete_device_and_customer_account() -> None:
             db.commit()
 
         dashboard = client.get("/app")
+        assert "device-stats" not in dashboard.text
+        assert "↓ 1.0 КБ" not in dashboard.text
+        assert "↑ 2.0 КБ" not in dashboard.text
         added_device = client.post(
             "/app/devices",
             data={

@@ -73,14 +73,23 @@ class MockProvisioner(Provisioner):
             dns=self.settings.awg_dns,
             obfuscation={
                 "Jc": "4",
-                "Jmin": "40",
-                "Jmax": "70",
-                "S1": "0",
-                "S2": "0",
+                "Jmin": "10",
+                "Jmax": "50",
+                "S1": "25",
+                "S2": "35",
+                "S3": "45",
+                "S4": "12",
                 "H1": "1",
                 "H2": "2",
                 "H3": "3",
                 "H4": "4",
+                "HeaderProtectionKey": self._key(),
+                "ContentPaddingAddition": "10-100",
+                "RekeyAfterTime": "100-120",
+                "RekeyTimeout": "3-7",
+                "RejectAfterTime": "150-180",
+                "KeepaliveTimeout": "5-15",
+                "MaxHandshakeAttempts": "15-20",
             },
             server_public_key=server_key,
             preshared_key=psk,
@@ -105,12 +114,22 @@ class MockProvisioner(Provisioner):
 
 
 class NativeAmneziaWGProvisioner(Provisioner):
-    """Controls one AmneziaWG interface using the official awg tools."""
+    """Controls one AmneziaWG 3 interface using the official awg tools."""
 
     PARAMETER_NAMES = (
         "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
         "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
+        "HeaderProtectionKey", "ContentPaddingAddition", "RekeyAfterTime",
+        "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout",
+        "MaxHandshakeAttempts",
     )
+
+    REQUIRED_PARAMETER_NAMES = {
+        "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
+        "H1", "H2", "H3", "H4", "HeaderProtectionKey",
+        "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
+        "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts",
+    }
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -160,10 +179,13 @@ class NativeAmneziaWGProvisioner(Provisioner):
             configured = getattr(self.settings, f"awg_i{number}")
             if configured:
                 values[f"I{number}"] = configured.strip()
-        required = {"Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"}
-        if not required.issubset(values):
-            missing = ", ".join(sorted(required - values.keys()))
-            raise ProvisioningError(f"Missing AmneziaWG parameters in server config: {missing}")
+        if not self.REQUIRED_PARAMETER_NAMES.issubset(values):
+            missing = ", ".join(
+                sorted(self.REQUIRED_PARAMETER_NAMES - values.keys())
+            )
+            raise ProvisioningError(
+                f"Missing AmneziaWG 3 parameters in server config: {missing}"
+            )
         return values
 
     def _save(self) -> None:
@@ -364,7 +386,7 @@ def _render_client_config(
         f"PresharedKey = {preshared_key}",
         "AllowedIPs = 0.0.0.0/0, ::/0",
         f"Endpoint = {endpoint}",
-        "PersistentKeepalive = 25",
+        "PersistentKeepalive = 25-35",
         "",
     ]
     return "\n".join([*interface_lines, *peer_lines])

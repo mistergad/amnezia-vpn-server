@@ -105,7 +105,6 @@ input:focus { border-color: #5ca877; box-shadow: 0 0 0 3px rgba(118,247,165,.08)
 .device-icon { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 11px; color: var(--green); background: var(--green-dark); font-size: 22px; }
 .device-card h3 { margin: 35px 0 4px; }
 .mono { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
-.device-stats { display: flex; gap: 18px; color: var(--muted); font-size: 12px; margin: 18px 0; }
 .device-actions { display: flex; align-items: center; gap: 7px; }
 .add-device { border-style: dashed; text-align: center; }
 .add-device h3 { margin: 10px 0; }

@@ -24,13 +24,20 @@ H2 = 300-400
 H3 = 500-600
 H4 = 700-800
 I1 = <r 2><b 0x0102>
+HeaderProtectionKey = header-protection-key
+ContentPaddingAddition = 10-100
+RekeyAfterTime = 100-120
+RekeyTimeout = 3-7
+RejectAfterTime = 150-180
+KeepaliveTimeout = 5-15
+MaxHandshakeAttempts = 15-20
 
 [Peer]
 PublicKey = server-public
 PresharedKey = client-psk
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = 203.0.113.8:55424
-PersistentKeepalive = 25
+PersistentKeepalive = 25-35
 """
 
 
@@ -62,9 +69,12 @@ def test_builds_guest_only_amnezia_vpn_key() -> None:
     container = envelope["containers"][0]  # type: ignore[index]
     assert container["container"] == "amnezia-awg2"
     awg = container["awg"]
-    assert awg["protocol_version"] == "2"
+    assert awg["protocol_version"] == "3"
+    assert awg["HeaderProtectionKey"] == "header-protection-key"
+    assert awg["ContentPaddingAddition"] == "10-100"
     client = json.loads(awg["last_config"])
     assert client["config"] == CONFIG
     assert client["client_pub_key"] == "client-public"
     assert client["client_priv_key"] == "client-private"
     assert client["I1"] == "<r 2><b 0x0102>"
+    assert client["RekeyAfterTime"] == "100-120"

@@ -1,7 +1,13 @@
-from app.config import Settings
 from datetime import timezone
 
-from app.services.provisioning import MockProvisioner, NativeAmneziaWGProvisioner
+import pytest
+
+from app.config import Settings
+from app.services.provisioning import (
+    MockProvisioner,
+    NativeAmneziaWGProvisioner,
+    ProvisioningError,
+)
 
 
 def test_mock_provisioner_issues_importable_config() -> None:
@@ -12,6 +18,9 @@ def test_mock_provisioner_issues_importable_config() -> None:
     assert "[Interface]" in issued.config
     assert "Address = 10.8.1.2/32" in issued.config
     assert "Jc = 4" in issued.config
+    assert "HeaderProtectionKey = " in issued.config
+    assert "ContentPaddingAddition = 10-100" in issued.config
+    assert "PersistentKeepalive = 25-35" in issued.config
     assert "[Peer]" in issued.config
     assert "Endpoint = 203.0.113.4:51820" in issued.config
     assert issued.public_key in provisioner.stats()
@@ -51,6 +60,15 @@ H1 = 1
 H2 = 2
 H3 = 3
 H4 = 4
+S3 = 30
+S4 = 12
+HeaderProtectionKey = header-protection-key
+ContentPaddingAddition = 10-100
+RekeyAfterTime = 100-120
+RekeyTimeout = 3-7
+RejectAfterTime = 150-180
+KeepaliveTimeout = 5-15
+MaxHandshakeAttempts = 15-20
 """
             return ""
 
@@ -70,6 +88,8 @@ H4 = 4
     assert "PrivateKey = client-private" in issued.config
     assert "Jmin = 40" in issued.config
     assert "I1 = <r 2><b 0x0102>" in issued.config
+    assert "HeaderProtectionKey = header-protection-key" in issued.config
+    assert "PersistentKeepalive = 25-35" in issued.config
     assert "PublicKey = server-public" in issued.config
     set_call = next(call for call in provisioner.calls if call[0][:1] == ["set"])
     assert "/dev/stdin" in set_call[0]
@@ -95,6 +115,30 @@ H4 = 4
         None,
         "/opt/amnezia/traffic-limit.sh",
     )
+
+
+def test_native_provisioner_rejects_legacy_awg2_config(tmp_path) -> None:
+    class LegacyProvisioner(NativeAmneziaWGProvisioner):
+        def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
+            return """[Interface]
+Jc = 4
+Jmin = 10
+Jmax = 50
+S1 = 20
+S2 = 30
+S3 = 40
+S4 = 12
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+"""
+
+    provisioner = LegacyProvisioner(
+        Settings(awg_config_path=tmp_path / "not-mounted.conf")
+    )
+    with pytest.raises(ProvisioningError, match="Missing AmneziaWG 3 parameters"):
+        provisioner._interface_settings()
 
 
 def test_native_stats_parser() -> None:

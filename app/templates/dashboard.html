@@ -78,7 +78,6 @@
       </div>
       <h3>{{ item.label }}</h3>
       <p class="mono">{{ item.assigned_ip }}</p>
-      <div class="device-stats"><span>↓ {{ format_bytes(item.rx_bytes) }}</span><span>↑ {{ format_bytes(item.tx_bytes) }}</span></div>
       <div class="device-actions">
         <a class="button small" href="/app/devices/{{ item.id }}/config">Скачать .conf</a>
         <button class="ghost-button small" type="button" data-copy-key-url="/app/devices/{{ item.id }}/key">Скопировать ключ</button>
@@ -98,7 +97,6 @@
       </div>
       <h3>{{ item.label }}</h3>
       <p class="mono">{{ item.assigned_ip }}</p>
-      <div class="device-stats"><span>↓ {{ format_bytes(item.rx_bytes) }}</span><span>↑ {{ format_bytes(item.tx_bytes) }}</span></div>
       <p class="muted">Сервис повторит подключение ключа автоматически.</p>
     </article>
     {% endfor %}

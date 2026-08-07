@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+trap 'status=$?; printf "traffic-limit: command failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; exit "$status"' ERR
+
 die() {
   printf 'traffic-limit: %s\n' "$*" >&2
   exit 1
@@ -40,12 +42,15 @@ ipv4_to_int() {
 
 init_qdiscs() {
   local interface="$1"
-  if ! tc qdisc show dev "$interface" | grep -Eq 'qdisc htb 1: root'; then
-    tc qdisc replace dev "$interface" root handle 1: htb default 1
+  if ! tc qdisc show dev "$interface" root | grep -Eq '^qdisc htb 1:'; then
+    tc qdisc del dev "$interface" root 2>/dev/null || true
+    tc qdisc add dev "$interface" root handle 1: htb default 1
   fi
-  tc class replace dev "$interface" parent 1: classid 1:1 \
-    htb rate 10gbit ceil 10gbit
-  if ! tc qdisc show dev "$interface" | grep -Eq 'qdisc ingress ffff:'; then
+  if ! tc class show dev "$interface" | grep -Eq '^class htb 1:1([[:space:]]|$)'; then
+    tc class add dev "$interface" parent 1: classid 1:1 \
+      htb rate 10gbit ceil 10gbit
+  fi
+  if ! tc qdisc show dev "$interface" ingress | grep -Eq '^qdisc ingress ffff:'; then
     tc qdisc add dev "$interface" handle ffff: ingress
   fi
 }
@@ -64,9 +69,12 @@ apply_limit() {
 
   tc filter del dev "$interface" parent 1: protocol ip pref "$minor" \
     2>/dev/null || true
-  tc class replace dev "$interface" parent 1: classid "1:$class_minor" \
+  tc qdisc del dev "$interface" parent "1:$class_minor" 2>/dev/null || true
+  tc class del dev "$interface" parent 1: classid "1:$class_minor" \
+    2>/dev/null || true
+  tc class add dev "$interface" parent 1: classid "1:$class_minor" \
     htb rate "${download}mbit" ceil "${download}mbit" burst 256k
-  tc qdisc replace dev "$interface" parent "1:$class_minor" \
+  tc qdisc add dev "$interface" parent "1:$class_minor" \
     handle "${class_minor}:" fq_codel
   tc filter add dev "$interface" parent 1: protocol ip pref "$minor" \
     flower dst_ip "$address/32" classid "1:$class_minor"
@@ -109,12 +117,13 @@ sync_limits() {
   peer_output="$(awg show "$interface" allowed-ips)" \
     || die "cannot read peers from $interface"
 
-  # Replacing the root and ingress qdiscs makes synchronization idempotent and
+  # Recreating the root and ingress qdiscs makes synchronization idempotent and
   # removes stale classes belonging to peers that no longer exist.
-  tc qdisc replace dev "$interface" root handle 1: htb default 1
+  tc qdisc del dev "$interface" root 2>/dev/null || true
+  tc qdisc add dev "$interface" root handle 1: htb default 1
   tc qdisc del dev "$interface" ingress 2>/dev/null || true
   tc qdisc add dev "$interface" handle ffff: ingress
-  tc class replace dev "$interface" parent 1: classid 1:1 \
+  tc class add dev "$interface" parent 1: classid 1:1 \
     htb rate 10gbit ceil 10gbit
 
   base_int="$(ipv4_to_int "$subnet_address")"

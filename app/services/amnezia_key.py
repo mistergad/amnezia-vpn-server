@@ -66,7 +66,7 @@ def build_amnezia_vpn_key(
     """Build a guest-only vpn:// key accepted by the AmneziaVPN client.
 
     The envelope intentionally contains no SSH user, password, or management
-    port. Its only credential is the already-issued AWG2 client configuration.
+    port. Its only credential is the already-issued AWG3 client configuration.
     """
 
     parser = configparser.ConfigParser(interpolation=None, strict=False)
@@ -97,7 +97,7 @@ def build_amnezia_vpn_key(
         "psk_key": peer.get("PresharedKey", "").strip(),
         "clientId": client_public_key,
         "allowed_ips": allowed_ips,
-        "persistent_keep_alive": peer.get("PersistentKeepalive", "25").strip(),
+        "persistent_keep_alive": peer.get("PersistentKeepalive", "25-35").strip(),
         "isObfuscationEnabled": bool(parameters),
         **parameters,
     }
@@ -108,7 +108,7 @@ def build_amnezia_vpn_key(
     server_config: dict[str, object] = {
         "port": str(port),
         "transport_proto": "udp",
-        "protocol_version": "2",
+        "protocol_version": "3",
         "subnet_address": str(network.network_address),
         "subnet_cidr": str(network.prefixlen),
         **parameters,
@@ -124,6 +124,8 @@ def build_amnezia_vpn_key(
         "hostName": host,
         "containers": [
             {
+                # AmneziaVPN keeps this historical container identifier for
+                # the userspace AWG implementation, including protocol v3.
                 "container": "amnezia-awg2",
                 "awg": server_config,
             }

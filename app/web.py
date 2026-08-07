@@ -285,7 +285,6 @@ def customer_dashboard(request: Request, db: Db) -> Response:
         max_devices=request.app.state.settings.max_devices_per_subscription,
         now=utcnow(),
         is_connected=_is_connected,
-        format_bytes=_format_bytes,
         suspended_devices=suspended_devices,
     )
 

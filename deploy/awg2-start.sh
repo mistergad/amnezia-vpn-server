@@ -1,12 +1,15 @@
 #!/bin/bash
+set -Eeuo pipefail
+
+trap 'status=$?; printf "awg3-start: command failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; exit "$status"' ERR
 
 iptables -F
 iptables -t nat -F
 
-ip link delete dev awg0
-awg-quick down /opt/amnezia/awg/awg0.conf
+ip link delete dev awg0 2>/dev/null || true
+awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null || true
 
-sysctl -p
+chmod 0600 /opt/amnezia/awg/awg0.conf
 if [ -f /opt/amnezia/awg/awg0.conf ]; then (awg-quick up /opt/amnezia/awg/awg0.conf); fi
 
 # Allow traffic on the TUN interface.
