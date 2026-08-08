@@ -82,7 +82,7 @@
         <a class="button small" href="/app/devices/{{ item.id }}/config">Скачать .conf</a>
         <button class="ghost-button small" type="button" data-copy-key-url="/app/devices/{{ item.id }}/key">Скопировать ключ</button>
         <a class="icon-button" href="/app/devices/{{ item.id }}/qr" target="_blank" title="QR-код">▦</a>
-        <form class="inline" method="post" action="/app/devices/{{ item.id }}/revoke" onsubmit="return confirm('Отозвать доступ этого устройства?')">
+        <form class="inline" method="post" action="/app/devices/{{ item.id }}/revoke" data-long-operation data-busy-label="Отзываем…" onsubmit="return confirm('Отозвать доступ этого устройства?')">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="danger-button" type="submit">Отозвать</button>
         </form>
@@ -101,7 +101,7 @@
     </article>
     {% endfor %}
     {% if active_credentials|length + suspended_credentials|length < max_devices %}
-    <form class="device-card add-device" method="post" action="/app/devices">
+    <form class="device-card add-device" method="post" action="/app/devices" data-long-operation data-busy-label="Выпускаем…">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="subscription_id" value="{{ sub.id }}">
       <div class="add-icon">+</div><h3>Добавить устройство</h3>

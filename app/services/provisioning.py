@@ -4,13 +4,22 @@ import base64
 import configparser
 import hashlib
 import ipaddress
+import logging
 import secrets
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
 from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -116,6 +125,9 @@ class MockProvisioner(Provisioner):
 class NativeAmneziaWGProvisioner(Provisioner):
     """Controls one AmneziaWG 3 interface using the official awg tools."""
 
+    COMMAND_TIMEOUT_SECONDS = 20
+    SLOW_COMMAND_SECONDS = 2.0
+
     PARAMETER_NAMES = (
         "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
         "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
@@ -133,11 +145,18 @@ class NativeAmneziaWGProvisioner(Provisioner):
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        # Requests and the periodic reconciler share this instance. Keep a
+        # complete peer mutation together so awg-quick cannot persist an
+        # intermediate state from another thread.
+        self._operation_lock = threading.RLock()
+        self._server_public_key: str | None = None
+        self._obfuscation_settings: dict[str, str] | None = None
 
     def _run(
         self, args: list[str], *, input_text: str | None = None, binary: str | None = None
     ) -> str:
         command = [*self.settings.awg_command_prefix, binary or self.settings.awg_binary, *args]
+        started = time.monotonic()
         try:
             completed = subprocess.run(
                 command,
@@ -145,14 +164,56 @@ class NativeAmneziaWGProvisioner(Provisioner):
                 text=True,
                 capture_output=True,
                 check=True,
-                timeout=20,
+                timeout=self.COMMAND_TIMEOUT_SECONDS,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             stderr = getattr(exc, "stderr", "") or ""
+            detail = stderr.strip()
+            if isinstance(exc, subprocess.TimeoutExpired):
+                detail = f"command timed out after {self.COMMAND_TIMEOUT_SECONDS}s"
             raise ProvisioningError(
-                f"AmneziaWG command failed: {' '.join(command[:3])}: {stderr.strip()}"
+                f"AmneziaWG command failed: {' '.join(command[:3])}: {detail}"
             ) from exc
+        finally:
+            elapsed = time.monotonic() - started
+            if elapsed >= self.SLOW_COMMAND_SECONDS:
+                executable = Path(binary or self.settings.awg_binary).name
+                action = args[0] if args else ""
+                logger.warning(
+                    "Slow AmneziaWG command: %s %s took %.2fs",
+                    executable,
+                    action,
+                    elapsed,
+                )
         return completed.stdout.strip()
+
+    @staticmethod
+    def _generate_key_material() -> tuple[str, str, str]:
+        """Generate WireGuard-compatible keys without three docker exec calls."""
+        private_bytes = bytearray(secrets.token_bytes(32))
+        private_bytes[0] &= 248
+        private_bytes[31] &= 127
+        private_bytes[31] |= 64
+        private_key = X25519PrivateKey.from_private_bytes(bytes(private_bytes))
+        public_bytes = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return (
+            base64.b64encode(private_bytes).decode(),
+            base64.b64encode(public_bytes).decode(),
+            base64.b64encode(secrets.token_bytes(32)).decode(),
+        )
+
+    def _server_metadata(self) -> tuple[str, dict[str, str]]:
+        """Cache AWG3 server values that stay constant until service restart."""
+        if self._server_public_key is None:
+            self._server_public_key = self._run(
+                ["show", self.settings.awg_interface, "public-key"]
+            )
+        if self._obfuscation_settings is None:
+            self._obfuscation_settings = self._interface_settings()
+        return self._server_public_key, dict(self._obfuscation_settings)
 
     def _interface_settings(self) -> dict[str, str]:
         path = Path(self.settings.awg_config_path)
@@ -238,66 +299,69 @@ class NativeAmneziaWGProvisioner(Provisioner):
         )
 
     def assigned_ips(self) -> set[str]:
-        output = self._run(["show", self.settings.awg_interface, "allowed-ips"])
-        assigned: set[str] = set()
-        for line in output.splitlines():
-            fields = line.split("\t", 1)
-            if len(fields) != 2 or fields[1].strip() == "(none)":
-                continue
-            for value in fields[1].split(","):
-                try:
-                    network = ipaddress.ip_network(value.strip(), strict=False)
-                except ValueError:
+        with self._operation_lock:
+            output = self._run(["show", self.settings.awg_interface, "allowed-ips"])
+            assigned: set[str] = set()
+            for line in output.splitlines():
+                fields = line.split("\t", 1)
+                if len(fields) != 2 or fields[1].strip() == "(none)":
                     continue
-                if network.version == 4 and network.prefixlen == 32:
-                    assigned.add(str(network.network_address))
-        return assigned
+                for value in fields[1].split(","):
+                    try:
+                        network = ipaddress.ip_network(value.strip(), strict=False)
+                    except ValueError:
+                        continue
+                    if network.version == 4 and network.prefixlen == 32:
+                        assigned.add(str(network.network_address))
+            return assigned
 
     def provision(self, assigned_ip: str) -> ProvisionedCredential:
-        private_key = self._run(["genkey"])
-        public_key = self._run(["pubkey"], input_text=private_key + "\n")
-        preshared_key = self._run(["genpsk"])
-        server_public_key = self._run(["show", self.settings.awg_interface, "public-key"])
-        self._run(
-            [
-                "set", self.settings.awg_interface, "peer", public_key,
-                "preshared-key", "/dev/stdin", "allowed-ips", f"{assigned_ip}/32",
-            ],
-            input_text=preshared_key + "\n",
-        )
-        try:
-            self._save()
-            self._apply_rate_limit(assigned_ip)
-            config = _render_client_config(
-                private_key=private_key,
-                assigned_ip=assigned_ip,
-                dns=self.settings.awg_dns,
-                obfuscation=self._interface_settings(),
-                server_public_key=server_public_key,
-                preshared_key=preshared_key,
-                endpoint=self.settings.awg_endpoint,
+        with self._operation_lock:
+            private_key, public_key, preshared_key = self._generate_key_material()
+            # Validate AWG3 metadata before changing the live peer and cache it
+            # so subsequent keys avoid two more docker exec calls.
+            server_public_key, obfuscation = self._server_metadata()
+            self._run(
+                [
+                    "set", self.settings.awg_interface, "peer", public_key,
+                    "preshared-key", "/dev/stdin", "allowed-ips", f"{assigned_ip}/32",
+                ],
+                input_text=preshared_key + "\n",
             )
-            return ProvisionedCredential(public_key=public_key, config=config)
-        except Exception:
             try:
-                self._run(
-                    ["set", self.settings.awg_interface, "peer", public_key, "remove"]
-                )
                 self._save()
+                self._apply_rate_limit(assigned_ip)
+                config = _render_client_config(
+                    private_key=private_key,
+                    assigned_ip=assigned_ip,
+                    dns=self.settings.awg_dns,
+                    obfuscation=obfuscation,
+                    server_public_key=server_public_key,
+                    preshared_key=preshared_key,
+                    endpoint=self.settings.awg_endpoint,
+                )
+                return ProvisionedCredential(public_key=public_key, config=config)
             except Exception:
-                pass
-            raise
+                try:
+                    self._run(
+                        ["set", self.settings.awg_interface, "peer", public_key, "remove"]
+                    )
+                    self._save()
+                except Exception:
+                    pass
+                raise
 
     def revoke(self, public_key: str, assigned_ip: str | None = None) -> None:
-        self._run(["set", self.settings.awg_interface, "peer", public_key, "remove"])
-        self._save()
-        if assigned_ip:
-            try:
-                self._remove_rate_limit(assigned_ip)
-            except ProvisioningError:
-                # A stale tc class is harmless and is removed by the next
-                # container/service synchronization. Peer revocation must win.
-                pass
+        with self._operation_lock:
+            self._run(["set", self.settings.awg_interface, "peer", public_key, "remove"])
+            self._save()
+            if assigned_ip:
+                try:
+                    self._remove_rate_limit(assigned_ip)
+                except ProvisioningError:
+                    # A stale tc class is harmless and is removed by the next
+                    # container/service synchronization. Peer revocation must win.
+                    pass
 
     def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
         parser = configparser.ConfigParser(interpolation=None, strict=False)
@@ -312,50 +376,52 @@ class NativeAmneziaWGProvisioner(Provisioner):
             raise ProvisioningError(
                 "Cannot restore peer: PresharedKey is empty in the client config"
             )
-        self._run(
-            [
-                "set", self.settings.awg_interface, "peer", public_key,
-                "preshared-key", "/dev/stdin", "allowed-ips", f"{assigned_ip}/32",
-            ],
-            input_text=preshared_key + "\n",
-        )
-        try:
-            self._save()
-            self._apply_rate_limit(assigned_ip)
-        except Exception:
+        with self._operation_lock:
+            self._run(
+                [
+                    "set", self.settings.awg_interface, "peer", public_key,
+                    "preshared-key", "/dev/stdin", "allowed-ips", f"{assigned_ip}/32",
+                ],
+                input_text=preshared_key + "\n",
+            )
             try:
-                self._run(
-                    ["set", self.settings.awg_interface, "peer", public_key, "remove"]
-                )
                 self._save()
+                self._apply_rate_limit(assigned_ip)
             except Exception:
-                pass
-            raise
+                try:
+                    self._run(
+                        ["set", self.settings.awg_interface, "peer", public_key, "remove"]
+                    )
+                    self._save()
+                except Exception:
+                    pass
+                raise
 
     def stats(self) -> dict[str, PeerStats]:
-        dump = self._run(["show", self.settings.awg_interface, "dump"])
-        peers: dict[str, PeerStats] = {}
-        for line_number, line in enumerate(dump.splitlines()):
-            if line_number == 0 or not line.strip():
-                continue
-            fields = line.split("\t")
-            if len(fields) < 8:
-                continue
-            try:
-                handshake_epoch = int(fields[4])
-                handshake = (
-                    datetime.fromtimestamp(handshake_epoch, tz=timezone.utc)
-                    if handshake_epoch > 0 else None
-                )
-                peers[fields[0]] = PeerStats(
-                    public_key=fields[0],
-                    last_handshake_at=handshake,
-                    rx_bytes=int(fields[5]),
-                    tx_bytes=int(fields[6]),
-                )
-            except ValueError:
-                continue
-        return peers
+        with self._operation_lock:
+            dump = self._run(["show", self.settings.awg_interface, "dump"])
+            peers: dict[str, PeerStats] = {}
+            for line_number, line in enumerate(dump.splitlines()):
+                if line_number == 0 or not line.strip():
+                    continue
+                fields = line.split("\t")
+                if len(fields) < 8:
+                    continue
+                try:
+                    handshake_epoch = int(fields[4])
+                    handshake = (
+                        datetime.fromtimestamp(handshake_epoch, tz=timezone.utc)
+                        if handshake_epoch > 0 else None
+                    )
+                    peers[fields[0]] = PeerStats(
+                        public_key=fields[0],
+                        last_handshake_at=handshake,
+                        rx_bytes=int(fields[5]),
+                        tx_bytes=int(fields[6]),
+                    )
+                except ValueError:
+                    continue
+            return peers
 
 
 def _render_client_config(
