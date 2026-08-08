@@ -86,10 +86,10 @@ init_qdiscs() {
     tc qdisc del dev "$interface" root 2>/dev/null || true
     tc qdisc add dev "$interface" root handle 1: htb default 1
   fi
-  if ! tc class show dev "$interface" | grep -Eq '^class htb 1:1([[:space:]]|$)'; then
-    tc class add dev "$interface" parent 1: classid 1:1 \
-      htb rate 10gbit ceil 10gbit
-  fi
+  # Atomic and idempotent even if another provisioning request has already
+  # created the default class.
+  tc class replace dev "$interface" parent 1: classid 1:1 \
+    htb rate 10gbit ceil 10gbit
   if ! tc qdisc show dev "$interface" ingress | grep -Eq '^qdisc ingress ffff:'; then
     tc qdisc add dev "$interface" handle ffff: ingress
   fi
@@ -163,7 +163,7 @@ sync_limits() {
   tc qdisc add dev "$interface" root handle 1: htb default 1
   tc qdisc del dev "$interface" ingress 2>/dev/null || true
   tc qdisc add dev "$interface" handle ffff: ingress
-  tc class add dev "$interface" parent 1: classid 1:1 \
+  tc class replace dev "$interface" parent 1: classid 1:1 \
     htb rate 10gbit ceil 10gbit
 
   base_int="$(ipv4_to_int "$subnet_address")"
