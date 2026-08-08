@@ -285,6 +285,25 @@ wait_for_awg() {
   return 1
 }
 
+APP_SERVICE_PAUSED=false
+
+pause_app_service() {
+  if systemctl is-active --quiet amnezia-service 2>/dev/null; then
+    log "Pausing the control plane while traffic limits are synchronized"
+    systemctl stop amnezia-service
+    APP_SERVICE_PAUSED=true
+  fi
+}
+
+resume_app_service() {
+  if [[ "$APP_SERVICE_PAUSED" == true ]]; then
+    systemctl start amnezia-service || warn "Could not resume amnezia-service"
+    APP_SERVICE_PAUSED=false
+  fi
+}
+
+trap resume_app_service EXIT
+
 report_awg_failure() {
   warn "AWG3 container state:"
   docker inspect --format \
@@ -337,10 +356,12 @@ if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
     warn "Existing AWG3 listens on UDP $detected_port; using it instead of $AWG_PORT."
     AWG_PORT="$detected_port"
   fi
+  pause_app_service
   install_awg_traffic_control
   docker exec "$CONTAINER_NAME" /opt/amnezia/traffic-limit.sh sync \
     awg0 "$AWG_SUBNET_IP/$AWG_SUBNET_CIDR" \
     "$AWG_DOWNLOAD_LIMIT_MBIT" "$AWG_UPLOAD_LIMIT_MBIT"
+  resume_app_service
 else
   log "Building AWG3 with pinned official AmneziaVPN server scripts and image $AWG_IMAGE"
   generate_awg_parameters

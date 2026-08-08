@@ -3,6 +3,46 @@ set -Eeuo pipefail
 
 trap 'status=$?; printf "traffic-limit: command failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; exit "$status"' ERR
 
+LOCK_DIR="${AWG_TRAFFIC_LIMIT_LOCK_DIR:-/tmp/amnezia-traffic-limit.lock}"
+LOCK_ACQUIRED=false
+
+release_lock() {
+  local owner=""
+  [[ "$LOCK_ACQUIRED" == true ]] || return 0
+  if [[ -r "$LOCK_DIR/pid" ]]; then
+    read -r owner < "$LOCK_DIR/pid" || true
+  fi
+  if [[ "$owner" == "$$" ]]; then
+    rm -f "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+  LOCK_ACQUIRED=false
+}
+
+acquire_lock() {
+  local attempt=0 owner=""
+  while ((attempt < 300)); do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      printf '%s\n' "$$" > "$LOCK_DIR/pid"
+      LOCK_ACQUIRED=true
+      return 0
+    fi
+    if [[ -r "$LOCK_DIR/pid" ]]; then
+      read -r owner < "$LOCK_DIR/pid" || true
+      if [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+        rm -f "$LOCK_DIR/pid"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+        continue
+      fi
+    fi
+    sleep 0.1
+    ((attempt += 1))
+  done
+  die "another traffic-control operation is still running after 30 seconds"
+}
+
+trap release_lock EXIT
+
 die() {
   printf 'traffic-limit: %s\n' "$*" >&2
   exit 1
@@ -148,6 +188,7 @@ sync_limits() {
 
 command -v tc >/dev/null 2>&1 || die "tc is unavailable; install iproute2"
 command -v ip >/dev/null 2>&1 || die "ip is unavailable; install iproute2"
+acquire_lock
 
 action="${1:-}"
 case "$action" in
