@@ -134,7 +134,7 @@ def test_registration_payment_key_and_revoke_flow() -> None:
         config_response = client.get(f"/app/devices/{credential_id}/config")
         assert config_response.status_code == 200
         assert "[Interface]" in config_response.text
-        assert "MTU = 1280" in config_response.text
+        assert "MTU = 1200" in config_response.text
         assert "PrivateKey =" in config_response.text
         assert config_response.headers["cache-control"] == "no-store"
 

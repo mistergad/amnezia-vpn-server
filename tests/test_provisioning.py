@@ -20,7 +20,7 @@ def test_mock_provisioner_issues_importable_config() -> None:
     issued = provisioner.provision("10.8.1.2")
     assert "[Interface]" in issued.config
     assert "Address = 10.8.1.2/32" in issued.config
-    assert "MTU = 1280" in issued.config
+    assert "MTU = 1200" in issued.config
     assert "Jc = 4" in issued.config
     assert "HeaderProtectionKey = " in issued.config
     assert "ContentPaddingAddition = 10-100" in issued.config
@@ -94,7 +94,7 @@ MaxHandshakeAttempts = 15-20
     issued = provisioner.provision("10.8.1.9")
     assert issued.public_key == "client-public"
     assert "PrivateKey = client-private" in issued.config
-    assert "MTU = 1280" in issued.config
+    assert "MTU = 1200" in issued.config
     assert "Jmin = 40" in issued.config
     assert "I1 = <r 2><b 0x0102>" in issued.config
     assert "HeaderProtectionKey = header-protection-key" in issued.config

@@ -73,8 +73,8 @@ def test_builds_guest_only_amnezia_vpn_key() -> None:
     assert awg["HeaderProtectionKey"] == "header-protection-key"
     assert awg["ContentPaddingAddition"] == "10-100"
     client = json.loads(awg["last_config"])
-    assert "MTU = 1280" in client["config"]
-    assert client["mtu"] == "1280"
+    assert "MTU = 1200" in client["config"]
+    assert client["mtu"] == "1200"
     assert client["client_pub_key"] == "client-public"
     assert client["client_priv_key"] == "client-private"
     assert client["I1"] == "<r 2><b 0x0102>"
