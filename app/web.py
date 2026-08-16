@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.security import ConfigCipher, hash_password, new_csrf_token, normalize_email, verify_password
 from app.services.amnezia_key import build_amnezia_vpn_key
+from app.services.client_config import ensure_client_mtu
 from app.services.lifecycle import (
     BusinessRuleError,
     activate_payment,
@@ -429,7 +430,11 @@ def _require_active_credential(credential: VpnCredential) -> None:
 def download_config(request: Request, db: Db, credential_id: str) -> Response:
     credential = _owned_credential(request, db, credential_id)
     _require_active_credential(credential)
-    config = ConfigCipher(request.app.state.settings).decrypt(credential.config_encrypted)
+    settings = request.app.state.settings
+    config = ensure_client_mtu(
+        ConfigCipher(settings).decrypt(credential.config_encrypted),
+        settings.awg_mtu,
+    )
     safe_name = "amnezia-" + credential.id[:8] + ".conf"
     return Response(
         content=config,
@@ -446,7 +451,11 @@ def download_config(request: Request, db: Db, credential_id: str) -> Response:
 def credential_qr(request: Request, db: Db, credential_id: str) -> StreamingResponse:
     credential = _owned_credential(request, db, credential_id)
     _require_active_credential(credential)
-    config = ConfigCipher(request.app.state.settings).decrypt(credential.config_encrypted)
+    settings = request.app.state.settings
+    config = ensure_client_mtu(
+        ConfigCipher(settings).decrypt(credential.config_encrypted),
+        settings.awg_mtu,
+    )
     image = qrcode.make(config)
     output = io.BytesIO()
     image.save(output, format="PNG")
@@ -463,7 +472,10 @@ def credential_text_key(request: Request, db: Db, credential_id: str) -> Respons
     credential = _owned_credential(request, db, credential_id)
     _require_active_credential(credential)
     settings = request.app.state.settings
-    config = ConfigCipher(settings).decrypt(credential.config_encrypted)
+    config = ensure_client_mtu(
+        ConfigCipher(settings).decrypt(credential.config_encrypted),
+        settings.awg_mtu,
+    )
     key = build_amnezia_vpn_key(
         config=config,
         client_public_key=credential.public_key,

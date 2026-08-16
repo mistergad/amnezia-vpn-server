@@ -80,6 +80,7 @@ class MockProvisioner(Provisioner):
             private_key=private_key,
             assigned_ip=assigned_ip,
             dns=self.settings.awg_dns,
+            mtu=self.settings.awg_mtu,
             obfuscation={
                 "Jc": "4",
                 "Jmin": "10",
@@ -335,6 +336,7 @@ class NativeAmneziaWGProvisioner(Provisioner):
                     private_key=private_key,
                     assigned_ip=assigned_ip,
                     dns=self.settings.awg_dns,
+                    mtu=self.settings.awg_mtu,
                     obfuscation=obfuscation,
                     server_public_key=server_public_key,
                     preshared_key=preshared_key,
@@ -429,6 +431,7 @@ def _render_client_config(
     private_key: str,
     assigned_ip: str,
     dns: str,
+    mtu: int,
     obfuscation: dict[str, str],
     server_public_key: str,
     preshared_key: str,
@@ -439,6 +442,7 @@ def _render_client_config(
         "[Interface]",
         f"Address = {assigned_ip}/32",
         f"DNS = {dns}",
+        f"MTU = {mtu}",
         f"PrivateKey = {private_key}",
     ]
     for name in NativeAmneziaWGProvisioner.PARAMETER_NAMES:
