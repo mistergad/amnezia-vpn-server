@@ -5,7 +5,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -171,6 +171,103 @@ def balance_kopecks(user: User) -> int:
         0,
         user.balance_units * PRICE_PER_DEVICE_MONTH_KOPECKS // BILLING_MONTH_SECONDS,
     )
+
+
+def set_customer_balance(
+    db: Session,
+    *,
+    user: User,
+    amount_rubles: int,
+) -> Subscription | None:
+    """Replace a customer's balance and keep their balance subscription usable."""
+    if user.role != UserRole.CUSTOMER:
+        raise BusinessRuleError("Баланс можно менять только клиентам")
+    if amount_rubles < 0:
+        raise BusinessRuleError("Баланс не может быть отрицательным")
+    if amount_rubles > 100_000:
+        raise BusinessRuleError("Баланс не может превышать 100 000 ₽")
+
+    now = utcnow()
+    locked_user = db.scalar(select(User).where(User.id == user.id).with_for_update())
+    if not locked_user:
+        raise BusinessRuleError("Клиент не найден")
+
+    subscription = db.scalar(
+        select(Subscription)
+        .where(
+            Subscription.user_id == locked_user.id,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+        )
+        .order_by(Subscription.created_at.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if subscription:
+        settle_subscription(db, subscription, now=now)
+    if not subscription:
+        subscription = db.scalar(
+            select(Subscription)
+            .where(
+                Subscription.user_id == locked_user.id,
+                Subscription.status == SubscriptionStatus.EXPIRED,
+            )
+            .order_by(Subscription.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+
+    amount_kopecks = amount_rubles * 100
+    locked_user.balance_units = (
+        amount_kopecks * BILLING_MONTH_SECONDS // PRICE_PER_DEVICE_MONTH_KOPECKS
+    )
+
+    if not subscription and amount_rubles == 0:
+        db.commit()
+        return None
+
+    plan = db.scalar(select(Plan).where(Plan.slug == "balance"))
+    if not plan:
+        db.rollback()
+        raise BusinessRuleError("Балансовый тариф не настроен")
+    if not subscription:
+        subscription = Subscription(
+            user_id=locked_user.id,
+            plan_id=plan.id,
+            status=SubscriptionStatus.ACTIVE,
+            starts_at=now,
+            expires_at=None,
+            device_limit=0,
+            last_billed_at=now,
+        )
+        db.add(subscription)
+        db.flush()
+
+    billable_devices = db.scalar(
+        select(func.count(VpnCredential.id)).where(
+            VpnCredential.subscription_id == subscription.id,
+            VpnCredential.status.in_(
+                [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
+            ),
+        )
+    ) or 0
+    subscription.plan_id = plan.id
+    subscription.device_limit = billable_devices
+    subscription.last_billed_at = now
+    subscription.starts_at = subscription.starts_at or now
+    # Keep a zero-balance subscription active until reconcile_expired has
+    # disabled its live peers. This also makes a failed revoke retryable.
+    subscription.status = (
+        SubscriptionStatus.ACTIVE
+        if amount_rubles > 0 or billable_devices > 0
+        else SubscriptionStatus.EXPIRED
+    )
+    subscription.expires_at = (
+        now + timedelta(seconds=locked_user.balance_units // billable_devices)
+        if billable_devices and amount_rubles > 0
+        else now if amount_rubles == 0 else None
+    )
+    db.commit()
+    return subscription
 
 
 def _units_for_payment(amount_kopecks: int) -> int:
@@ -686,14 +783,28 @@ def refresh_peer_stats(db: Session, provisioner: Provisioner) -> int:
     return updated
 
 
-def reconcile_expired(db: Session, provisioner: Provisioner) -> int:
+def reconcile_expired(
+    db: Session,
+    provisioner: Provisioner,
+    *,
+    subscription_id: str | None = None,
+) -> int:
     now = utcnow()
-    subscriptions = list(
-        db.scalars(
-            select(Subscription).where(
-                Subscription.status == SubscriptionStatus.ACTIVE,
-            )
+    query = select(Subscription).where(
+        or_(
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            and_(
+                Subscription.status == SubscriptionStatus.EXPIRED,
+                Subscription.credentials.any(
+                    VpnCredential.status == CredentialStatus.ACTIVE
+                ),
+            ),
         )
+    )
+    if subscription_id:
+        query = query.where(Subscription.id == subscription_id)
+    subscriptions = list(
+        db.scalars(query)
     )
     reconciled = 0
     for subscription in subscriptions:

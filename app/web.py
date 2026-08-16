@@ -35,9 +35,11 @@ from app.services.lifecycle import (
     delete_credential,
     delete_customer_account,
     ensure_first_credential,
+    reconcile_expired,
     refresh_peer_stats,
     restore_suspended_credentials,
     revoke_credential,
+    set_customer_balance,
     settle_subscription,
 )
 
@@ -544,6 +546,78 @@ def admin_client(request: Request, db: Db, user_id: str) -> Response:
         format_bytes=_format_bytes,
         format_bitrate=_format_bitrate,
     )
+
+
+@router.post("/admin/clients/{user_id}/balance")
+def admin_update_balance(
+    request: Request,
+    db: Db,
+    user_id: str,
+    amount_rubles: Annotated[int, Form()],
+    csrf_token: Annotated[str, Form()],
+) -> RedirectResponse:
+    _check_csrf(request, csrf_token)
+    _require_admin(request, db)
+    customer = db.scalar(
+        select(User).where(User.id == user_id, User.role == UserRole.CUSTOMER)
+    )
+    if not customer:
+        raise HTTPException(404, detail="Клиент не найден")
+    subscription = set_customer_balance(
+        db,
+        user=customer,
+        amount_rubles=amount_rubles,
+    )
+    if subscription and amount_rubles > 0:
+        restore_suspended_credentials(
+            db,
+            subscription=subscription,
+            settings=request.app.state.settings,
+            provisioner=request.app.state.provisioner,
+        )
+    elif subscription:
+        reconcile_expired(
+            db,
+            request.app.state.provisioner,
+            subscription_id=subscription.id,
+        )
+    return RedirectResponse(f"/admin/clients/{user_id}", 303)
+
+
+@router.post("/admin/clients/{user_id}/devices")
+def admin_add_device(
+    request: Request,
+    db: Db,
+    user_id: str,
+    label: Annotated[str, Form()],
+    csrf_token: Annotated[str, Form()],
+) -> RedirectResponse:
+    _check_csrf(request, csrf_token)
+    _require_admin(request, db)
+    customer = db.scalar(
+        select(User).where(User.id == user_id, User.role == UserRole.CUSTOMER)
+    )
+    if not customer:
+        raise HTTPException(404, detail="Клиент не найден")
+    subscription = db.scalar(
+        select(Subscription)
+        .where(
+            Subscription.user_id == customer.id,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+        )
+        .order_by(Subscription.created_at.desc())
+        .limit(1)
+    )
+    if not subscription:
+        raise BusinessRuleError("Сначала установите клиенту положительный баланс")
+    create_credential(
+        db,
+        subscription=subscription,
+        label=label,
+        settings=request.app.state.settings,
+        provisioner=request.app.state.provisioner,
+    )
+    return RedirectResponse(f"/admin/clients/{user_id}", 303)
 
 
 @router.post("/admin/devices/{credential_id}/delete")

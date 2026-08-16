@@ -160,6 +160,14 @@ td small { display: block; margin-top: 4px; }
 .client-summary-grid span, .client-summary-grid strong { display: block; }
 .client-summary-grid span { color: var(--muted); font-size: 13px; }
 .client-summary-grid strong { margin-top: 24px; font-size: 25px; letter-spacing: -.03em; }
+.admin-control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 25px; }
+.admin-control-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .75fr); gap: 28px; align-items: center; padding: 25px; border: 1px solid var(--line); border-radius: 17px; background: var(--panel); }
+.admin-control-card h2 { margin: 7px 0; font-size: 24px; letter-spacing: -.03em; }
+.admin-control-card p { margin: 0; color: var(--muted); font-size: 13px; }
+.admin-control-card form, .admin-control-card label { margin: 0; }
+.admin-control-card button { margin-top: 10px; }
+.admin-control-card button:disabled, .admin-control-card input:disabled { cursor: not-allowed; opacity: .48; }
+.control-hint { display: block; margin-top: 9px; color: var(--muted); text-align: center; }
 .destructive-zone { display: flex; justify-content: space-between; align-items: center; gap: 35px; margin-top: -60px; margin-bottom: 100px; padding: 28px; border: 1px solid rgba(255,100,100,.18); border-radius: var(--radius); background: rgba(255,90,90,.045); }
 .destructive-zone h2 { margin: 7px 0; }
 .destructive-zone p { max-width: 690px; margin-bottom: 0; color: var(--muted); }
@@ -168,7 +176,7 @@ td small { display: block; margin-top: 4px; }
 @media (max-width: 850px) {
   .nav-email { display: none; } .hero { padding-top: 75px; } .feature-grid, .plans-grid, .device-grid { grid-template-columns: 1fr; }
   .auth-wrap { grid-template-columns: 1fr; gap: 35px; padding-top: 55px; } .auth-copy h1 { font-size: 58px; }
-  .subscription-meta, .metric-grid, .balance-overview, .balance-start, .client-summary-grid { grid-template-columns: 1fr; } .renew-block, .section-heading, .destructive-zone { align-items: flex-start; flex-direction: column; gap: 25px; }
+  .subscription-meta, .metric-grid, .balance-overview, .balance-start, .client-summary-grid, .admin-control-grid { grid-template-columns: 1fr; } .renew-block, .section-heading, .destructive-zone { align-items: flex-start; flex-direction: column; gap: 25px; }
   .renew-actions { width: 100%; flex-direction: column; } .renew-actions form, .renew-actions button { width: 100%; }
   .balance-form.horizontal { min-width: 0; width: 100%; grid-template-columns: 1fr 1fr; }
   .balance-form.horizontal.no-device-field { min-width: 0; grid-template-columns: 1fr 1fr; }
@@ -181,4 +189,5 @@ td small { display: block; margin-top: 4px; }
   .balance-form.horizontal { grid-template-columns: 1fr; }
   .balance-form.horizontal.no-device-field { grid-template-columns: 1fr; }
   .client-actions { align-items: stretch; flex-direction: column; }
+  .admin-control-card { grid-template-columns: 1fr; }
 }

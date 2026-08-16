@@ -26,6 +26,41 @@
   </article>
 </section>
 
+<section class="shell admin-control-grid">
+  <article class="admin-control-card">
+    <div>
+      <span class="eyebrow">Баланс клиента</span>
+      <h2>Изменить остаток</h2>
+      <p>Укажите точную сумму. Расход: 100 ₽ за 30 дней на каждое активное устройство.</p>
+    </div>
+    <form method="post" action="/admin/clients/{{ client.user.id }}/balance" data-long-operation data-busy-label="Сохраняем…">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Новый баланс, ₽
+        <input type="number" name="amount_rubles" min="0" max="100000" step="1" value="{{ client.balance_kopecks // 100 }}" required>
+      </label>
+      <button class="button full" type="submit">Сохранить баланс</button>
+    </form>
+  </article>
+
+  <article class="admin-control-card">
+    <div>
+      <span class="eyebrow">VPN-доступ</span>
+      <h2>Добавить устройство</h2>
+      <p>Сервис выпустит новый AWG-ключ и автоматически пересчитает дату окончания.</p>
+    </div>
+    <form method="post" action="/admin/clients/{{ client.user.id }}/devices" data-long-operation data-busy-label="Выпускаем…">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Название устройства
+        <input name="label" maxlength="120" placeholder="Например, iPhone" required {% if not client.subscription or client.subscription.status.value != 'active' or client.balance_kopecks <= 0 %}disabled{% endif %}>
+      </label>
+      <button class="button full" type="submit" {% if not client.subscription or client.subscription.status.value != 'active' or client.balance_kopecks <= 0 %}disabled{% endif %}>Выпустить ключ</button>
+      {% if not client.subscription or client.subscription.status.value != 'active' or client.balance_kopecks <= 0 %}
+        <small class="control-hint">Сначала установите положительный баланс.</small>
+      {% endif %}
+    </form>
+  </article>
+</section>
+
 <section class="shell table-card">
   <div class="table-title"><div><span class="eyebrow">VPN-доступ</span><h2>Устройства</h2></div></div>
   <div class="table-scroll">

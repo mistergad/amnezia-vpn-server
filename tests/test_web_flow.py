@@ -10,7 +10,7 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import CredentialStatus, Payment, PaymentStatus, Subscription, User, VpnCredential
 from app.models import SubscriptionStatus, utcnow
-from app.services.lifecycle import reconcile_expired, refresh_peer_stats
+from app.services.lifecycle import balance_kopecks, reconcile_expired, refresh_peer_stats
 
 
 def csrf(html: str) -> str:
@@ -214,6 +214,134 @@ def test_admin_can_open_client_api() -> None:
             assert client_data["balance_kopecks"] >= 0
             assert client_data["download_rate_bps"] >= 0
             assert client_data["upload_rate_bps"] >= 0
+
+
+def test_admin_can_edit_balance_and_add_device() -> None:
+    email = "admin-managed@example.com"
+    with TestClient(app) as client:
+        register_page = client.get("/register")
+        registered = client.post(
+            "/register",
+            data={
+                "email": email,
+                "password": "very-secure-password",
+                "csrf_token": csrf(register_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert registered.status_code == 303
+
+        with SessionLocal() as db:
+            customer = db.scalar(select(User).where(User.email == email))
+            assert customer
+            customer_id = customer.id
+
+        customer_dashboard = client.get("/app")
+        denied = client.post(
+            f"/admin/clients/{customer_id}/balance",
+            data={"amount_rubles": "450", "csrf_token": csrf(customer_dashboard.text)},
+            follow_redirects=False,
+        )
+        assert denied.status_code == 403
+
+        client.cookies.clear()
+        login = client.get("/login")
+        logged_in = client.post(
+            "/login",
+            data={
+                "email": "admin@test.local",
+                "password": "strong-test-admin-password",
+                "csrf_token": csrf(login.text),
+            },
+            follow_redirects=False,
+        )
+        assert logged_in.headers["location"] == "/admin"
+
+        client_page = client.get(f"/admin/clients/{customer_id}")
+        assert "Изменить остаток" in client_page.text
+        assert "Добавить устройство" in client_page.text
+        updated = client.post(
+            f"/admin/clients/{customer_id}/balance",
+            data={"amount_rubles": "450", "csrf_token": csrf(client_page.text)},
+            follow_redirects=False,
+        )
+        assert updated.status_code == 303
+        assert updated.headers["location"] == f"/admin/clients/{customer_id}"
+
+        with SessionLocal() as db:
+            customer = db.get(User, customer_id)
+            subscription = db.scalar(
+                select(Subscription).where(
+                    Subscription.user_id == customer_id,
+                    Subscription.status == SubscriptionStatus.ACTIVE,
+                )
+            )
+            assert customer and balance_kopecks(customer) == 45_000
+            assert subscription and subscription.device_limit == 0
+            subscription_id = subscription.id
+
+        client_page = client.get(f"/admin/clients/{customer_id}")
+        added = client.post(
+            f"/admin/clients/{customer_id}/devices",
+            data={"label": "Семейный iPhone", "csrf_token": csrf(client_page.text)},
+            follow_redirects=False,
+        )
+        assert added.status_code == 303
+        assert added.headers["location"] == f"/admin/clients/{customer_id}"
+
+        with SessionLocal() as db:
+            credential = db.scalar(
+                select(VpnCredential).where(
+                    VpnCredential.user_id == customer_id,
+                    VpnCredential.label == "Семейный iPhone",
+                )
+            )
+            subscription = db.get(Subscription, subscription_id)
+            assert credential and credential.status == CredentialStatus.ACTIVE
+            assert subscription and subscription.device_limit == 1
+            assert subscription.expires_at is not None
+            credential_id = credential.id
+            public_key = credential.public_key
+            assert public_key in app.state.provisioner.stats()
+
+        client_page = client.get(f"/admin/clients/{customer_id}")
+        depleted = client.post(
+            f"/admin/clients/{customer_id}/balance",
+            data={"amount_rubles": "0", "csrf_token": csrf(client_page.text)},
+            follow_redirects=False,
+        )
+        assert depleted.status_code == 303
+        with SessionLocal() as db:
+            customer = db.get(User, customer_id)
+            subscription = db.get(Subscription, subscription_id)
+            credential = db.get(VpnCredential, credential_id)
+            assert customer and balance_kopecks(customer) == 0
+            assert subscription and subscription.status == SubscriptionStatus.EXPIRED
+            assert credential and credential.status == CredentialStatus.SUSPENDED
+            assert public_key not in app.state.provisioner.stats()
+
+        client_page = client.get(f"/admin/clients/{customer_id}")
+        restored = client.post(
+            f"/admin/clients/{customer_id}/balance",
+            data={"amount_rubles": "200", "csrf_token": csrf(client_page.text)},
+            follow_redirects=False,
+        )
+        assert restored.status_code == 303
+        with SessionLocal() as db:
+            customer = db.get(User, customer_id)
+            subscription = db.get(Subscription, subscription_id)
+            credential = db.get(VpnCredential, credential_id)
+            assert customer and balance_kopecks(customer) == 20_000
+            assert subscription and subscription.status == SubscriptionStatus.ACTIVE
+            assert credential and credential.status == CredentialStatus.ACTIVE
+            assert public_key in app.state.provisioner.stats()
+
+        client_page = client.get(f"/admin/clients/{customer_id}")
+        client.post(
+            f"/admin/clients/{customer_id}/balance",
+            data={"amount_rubles": "0", "csrf_token": csrf(client_page.text)},
+            follow_redirects=False,
+        )
 
 
 def test_expired_key_is_restored_after_balance_topup() -> None:
