@@ -20,6 +20,7 @@ readonly AWG_BUILD_DIR="/opt/amnezia/amnezia-awg2"
 readonly GENERATED_DIR="/opt/amnezia/deploy-generated"
 readonly AWG_SUBNET_IP="10.8.1.0"
 readonly AWG_SUBNET_CIDR="24"
+readonly AWG_SERVER_MTU="1280"
 readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.0.20260805@sha256:8447c91637c37536dd99b8bbd4420c819ac9f330f047804197291625bfb0ea8a"
 
 DOMAIN="${DOMAIN:-}"
@@ -323,14 +324,15 @@ verify_awg3() {
 }
 
 install_awg_traffic_control() {
-  log "Configuring per-device AWG3 limits (${AWG_DOWNLOAD_LIMIT_MBIT} Mbit/s down, ${AWG_UPLOAD_LIMIT_MBIT} Mbit/s up)"
+  log "Configuring AWG3 server MTU $AWG_SERVER_MTU and per-device limits (${AWG_DOWNLOAD_LIMIT_MBIT} Mbit/s down, ${AWG_UPLOAD_LIMIT_MBIT} Mbit/s up)"
   install -d -m 0755 "$GENERATED_DIR"
   if ! docker exec "$CONTAINER_NAME" sh -lc 'command -v tc >/dev/null 2>&1'; then
     docker exec "$CONTAINER_NAME" apk add --no-cache iproute2
   fi
-  export AWG_SUBNET_IP AWG_SUBNET_CIDR AWG_DOWNLOAD_LIMIT_MBIT AWG_UPLOAD_LIMIT_MBIT
+  export AWG_SUBNET_IP AWG_SUBNET_CIDR AWG_SERVER_MTU
+  export AWG_DOWNLOAD_LIMIT_MBIT AWG_UPLOAD_LIMIT_MBIT
   export WIREGUARD_SUBNET_CIDR="$AWG_SUBNET_CIDR"
-  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_DOWNLOAD_LIMIT_MBIT} ${AWG_UPLOAD_LIMIT_MBIT}' \
+  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_SERVER_MTU} ${AWG_DOWNLOAD_LIMIT_MBIT} ${AWG_UPLOAD_LIMIT_MBIT}' \
     < "$SCRIPT_DIR/awg2-start.sh" \
     > "$GENERATED_DIR/start.sh"
   chmod 0755 "$GENERATED_DIR/start.sh"
@@ -341,6 +343,7 @@ install_awg_traffic_control() {
   docker cp "$GENERATED_DIR/start.sh" "$CONTAINER_NAME:/opt/amnezia/start.sh"
   docker exec "$CONTAINER_NAME" chmod 0755 \
     /opt/amnezia/traffic-limit.sh /opt/amnezia/start.sh
+  docker exec "$CONTAINER_NAME" ip link set dev awg0 mtu "$AWG_SERVER_MTU"
 }
 
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
