@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     awg_endpoint: str = "vpn.example.com:51820"
     awg_subnet: str = "10.8.1.0/24"
     awg_dns: str = "1.1.1.1, 1.0.0.1"
-    awg_mtu: int = Field(default=1200, ge=576, le=9000)
+    awg_mtu: int = Field(default=1280, ge=576, le=9000)
     awg_command_prefix: list[str] = Field(default_factory=list)
     awg_save_config: bool = True
     awg_i1: str | None = None
