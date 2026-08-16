@@ -20,7 +20,7 @@ readonly AWG_BUILD_DIR="/opt/amnezia/amnezia-awg2"
 readonly GENERATED_DIR="/opt/amnezia/deploy-generated"
 readonly AWG_SUBNET_IP="10.8.1.0"
 readonly AWG_SUBNET_CIDR="24"
-readonly AWG_SERVER_MTU="1200"
+readonly AWG_SERVER_MTU="1280"
 readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.0.20260805@sha256:8447c91637c37536dd99b8bbd4420c819ac9f330f047804197291625bfb0ea8a"
 
 DOMAIN="${DOMAIN:-}"
