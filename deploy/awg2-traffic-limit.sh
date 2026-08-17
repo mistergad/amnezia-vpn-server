@@ -1,6 +1,48 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+trap 'status=$?; printf "traffic-limit: command failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; exit "$status"' ERR
+
+LOCK_DIR="${AWG_TRAFFIC_LIMIT_LOCK_DIR:-/tmp/amnezia-traffic-limit.lock}"
+LOCK_ACQUIRED=false
+
+release_lock() {
+  local owner=""
+  [[ "$LOCK_ACQUIRED" == true ]] || return 0
+  if [[ -r "$LOCK_DIR/pid" ]]; then
+    read -r owner < "$LOCK_DIR/pid" || true
+  fi
+  if [[ "$owner" == "$$" ]]; then
+    rm -f "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+  LOCK_ACQUIRED=false
+}
+
+acquire_lock() {
+  local attempt=0 owner=""
+  while ((attempt < 300)); do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      printf '%s\n' "$$" > "$LOCK_DIR/pid"
+      LOCK_ACQUIRED=true
+      return 0
+    fi
+    if [[ -r "$LOCK_DIR/pid" ]]; then
+      read -r owner < "$LOCK_DIR/pid" || true
+      if [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+        rm -f "$LOCK_DIR/pid"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+        continue
+      fi
+    fi
+    sleep 0.1
+    ((attempt += 1))
+  done
+  die "another traffic-control operation is still running after 30 seconds"
+}
+
+trap release_lock EXIT
+
 die() {
   printf 'traffic-limit: %s\n' "$*" >&2
   exit 1
@@ -40,12 +82,15 @@ ipv4_to_int() {
 
 init_qdiscs() {
   local interface="$1"
-  if ! tc qdisc show dev "$interface" | grep -Eq 'qdisc htb 1: root'; then
-    tc qdisc replace dev "$interface" root handle 1: htb default 1
+  if ! tc qdisc show dev "$interface" root | grep -Eq '^qdisc htb 1:'; then
+    tc qdisc del dev "$interface" root 2>/dev/null || true
+    tc qdisc add dev "$interface" root handle 1: htb default 1
   fi
+  # Atomic and idempotent even if another provisioning request has already
+  # created the default class.
   tc class replace dev "$interface" parent 1: classid 1:1 \
     htb rate 10gbit ceil 10gbit
-  if ! tc qdisc show dev "$interface" | grep -Eq 'qdisc ingress ffff:'; then
+  if ! tc qdisc show dev "$interface" ingress | grep -Eq '^qdisc ingress ffff:'; then
     tc qdisc add dev "$interface" handle ffff: ingress
   fi
 }
@@ -64,9 +109,12 @@ apply_limit() {
 
   tc filter del dev "$interface" parent 1: protocol ip pref "$minor" \
     2>/dev/null || true
-  tc class replace dev "$interface" parent 1: classid "1:$class_minor" \
+  tc qdisc del dev "$interface" parent "1:$class_minor" 2>/dev/null || true
+  tc class del dev "$interface" parent 1: classid "1:$class_minor" \
+    2>/dev/null || true
+  tc class add dev "$interface" parent 1: classid "1:$class_minor" \
     htb rate "${download}mbit" ceil "${download}mbit" burst 256k
-  tc qdisc replace dev "$interface" parent "1:$class_minor" \
+  tc qdisc add dev "$interface" parent "1:$class_minor" \
     handle "${class_minor}:" fq_codel
   tc filter add dev "$interface" parent 1: protocol ip pref "$minor" \
     flower dst_ip "$address/32" classid "1:$class_minor"
@@ -109,9 +157,10 @@ sync_limits() {
   peer_output="$(awg show "$interface" allowed-ips)" \
     || die "cannot read peers from $interface"
 
-  # Replacing the root and ingress qdiscs makes synchronization idempotent and
+  # Recreating the root and ingress qdiscs makes synchronization idempotent and
   # removes stale classes belonging to peers that no longer exist.
-  tc qdisc replace dev "$interface" root handle 1: htb default 1
+  tc qdisc del dev "$interface" root 2>/dev/null || true
+  tc qdisc add dev "$interface" root handle 1: htb default 1
   tc qdisc del dev "$interface" ingress 2>/dev/null || true
   tc qdisc add dev "$interface" handle ffff: ingress
   tc class replace dev "$interface" parent 1: classid 1:1 \
@@ -139,6 +188,7 @@ sync_limits() {
 
 command -v tc >/dev/null 2>&1 || die "tc is unavailable; install iproute2"
 command -v ip >/dev/null 2>&1 || die "ip is unavailable; install iproute2"
+acquire_lock
 
 action="${1:-}"
 case "$action" in
