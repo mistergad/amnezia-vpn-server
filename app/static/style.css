@@ -67,6 +67,10 @@ input:focus { border-color: #5ca877; box-shadow: 0 0 0 3px rgba(118,247,165,.08)
 .form-foot { color: var(--muted); text-align: center; margin: 20px 0 0; font-size: 13px; }
 .form-foot a, .table-title a { color: var(--green); }
 .error { padding: 11px 13px; color: #ffabab; background: rgba(255,90,90,.08); border: 1px solid rgba(255,100,100,.15); border-radius: 10px; font-size: 13px; }
+form[aria-busy="true"] { opacity: .72; }
+button.is-busy { cursor: wait; }
+button.is-busy::after { content: ""; display: inline-block; width: 12px; height: 12px; margin-left: 8px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -2px; animation: busy-spin .7s linear infinite; }
+@keyframes busy-spin { to { transform: rotate(360deg); } }
 .dashboard-head { padding: 70px 0 35px; display: flex; align-items: end; justify-content: space-between; }
 .dashboard-head h1 { font-size: 58px; margin: 7px 0 0; letter-spacing: -.06em; }
 .status-pill, .connection { display: inline-flex; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: var(--panel); font-size: 12px; }

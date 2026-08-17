@@ -1,6 +1,10 @@
-from app.config import Settings
+import base64
 from datetime import timezone
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+from app.config import Settings
 from app.services.provisioning import MockProvisioner, NativeAmneziaWGProvisioner
 
 
@@ -30,14 +34,12 @@ def test_native_provisioner_reads_live_amnezia_parameters(tmp_path) -> None:
             super().__init__(settings)
             self.calls: list[tuple[list[str], str | None, str | None]] = []
 
+        @staticmethod
+        def _generate_key_material() -> tuple[str, str, str]:
+            return "client-private", "client-public", "client-psk"
+
         def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
             self.calls.append((args, input_text, binary))
-            if args == ["genkey"]:
-                return "client-private"
-            if args == ["pubkey"]:
-                return "client-public"
-            if args == ["genpsk"]:
-                return "client-psk"
             if args[-1:] == ["public-key"]:
                 return "server-public"
             if args[:1] == ["showconf"]:
@@ -80,6 +82,18 @@ H4 = 4
         if call[2] == "/opt/amnezia/traffic-limit.sh"
     )
     assert rate_call[0] == ["apply", "awg0", "10.8.1.9", "9", "10", "8"]
+    assert not any(
+        call[0] in (["genkey"], ["pubkey"], ["genpsk"])
+        for call in provisioner.calls
+    )
+
+    # AWG2 interface metadata is static and should be fetched only once for
+    # multiple key releases.
+    second = provisioner.provision("10.8.1.10")
+    assert "Jmin = 40" in second.config
+    assert "HeaderProtectionKey" not in second.config
+    assert sum(call[0][-1:] == ["public-key"] for call in provisioner.calls) == 1
+    assert sum(call[0][:1] == ["showconf"] for call in provisioner.calls) == 1
 
     provisioner.restore(issued.public_key, "10.8.1.9", issued.config)
     restore_call = [
@@ -95,6 +109,30 @@ H4 = 4
         None,
         "/opt/amnezia/traffic-limit.sh",
     )
+
+
+def test_native_local_key_generation_is_wireguard_compatible() -> None:
+    private_key, public_key, preshared_key = (
+        NativeAmneziaWGProvisioner._generate_key_material()
+    )
+    private_bytes = base64.b64decode(private_key)
+    public_bytes = base64.b64decode(public_key)
+
+    assert len(private_bytes) == 32
+    assert len(public_bytes) == 32
+    assert len(base64.b64decode(preshared_key)) == 32
+    assert private_bytes[0] & 0b111 == 0
+    assert private_bytes[31] & 0b10000000 == 0
+    assert private_bytes[31] & 0b01000000 != 0
+    derived_public = (
+        X25519PrivateKey.from_private_bytes(private_bytes)
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    assert public_bytes == derived_public
 
 
 def test_native_stats_parser() -> None:

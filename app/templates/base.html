@@ -33,6 +33,24 @@
     <span>{{ app_name }}</span>
     <span class="muted">Защищенное подключение на базе AmneziaWG</span>
   </footer>
+  <script>
+  document.addEventListener('submit', function (event) {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !form.matches('[data-long-operation]')) return;
+    if (form.dataset.submitting === 'true') {
+      event.preventDefault();
+      return;
+    }
+    form.dataset.submitting = 'true';
+    form.setAttribute('aria-busy', 'true');
+    const button = event.submitter || form.querySelector('button[type="submit"]');
+    if (button) {
+      button.disabled = true;
+      button.classList.add('is-busy');
+      button.textContent = form.dataset.busyLabel || 'Выполняется…';
+    }
+  });
+  </script>
 </body>
 </html>
 

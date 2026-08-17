@@ -73,7 +73,7 @@
                 <a class="ghost-button compact-button" href="/app/devices/{{ item.id }}/config">.conf</a>
                 <a class="icon-button" href="/app/devices/{{ item.id }}/qr" target="_blank" title="QR-код">▦</a>
               {% endif %}
-              <form method="post" action="/admin/devices/{{ item.id }}/delete" onsubmit="return confirm('Удалить устройство {{ item.label }}? Активный VPN-ключ будет немедленно отозван.')">
+              <form method="post" action="/admin/devices/{{ item.id }}/delete" data-long-operation data-busy-label="Удаляем…" onsubmit="return confirm('Удалить устройство {{ item.label }}? Активный VPN-ключ будет немедленно отозван.')">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button class="danger-button" type="submit">Удалить устройство</button>
               </form>
@@ -94,7 +94,7 @@
     <h2>Удалить аккаунт клиента</h2>
     <p>Будут отозваны все активные ключи и безвозвратно удалены баланс, подписки и история платежей.</p>
   </div>
-  <form method="post" action="/admin/clients/{{ client.user.id }}/delete" onsubmit="return confirm('Полностью удалить аккаунт {{ client.user.email }}? Это действие нельзя отменить.')">
+  <form method="post" action="/admin/clients/{{ client.user.id }}/delete" data-long-operation data-busy-label="Удаляем…" onsubmit="return confirm('Полностью удалить аккаунт {{ client.user.email }}? Это действие нельзя отменить.')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="danger-button destructive-button" type="submit">Удалить аккаунт</button>
   </form>

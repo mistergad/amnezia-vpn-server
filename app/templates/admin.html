@@ -44,7 +44,7 @@
           </td>
           <td class="client-actions">
             <a class="ghost-button compact-button" href="/admin/clients/{{ item.user.id }}">Управлять</a>
-            <form method="post" action="/admin/clients/{{ item.user.id }}/delete" onsubmit="return confirm('Удалить аккаунт {{ item.user.email }}? Все VPN-ключи, баланс и история платежей будут удалены без возможности восстановления.')">
+            <form method="post" action="/admin/clients/{{ item.user.id }}/delete" data-long-operation data-busy-label="Удаляем…" onsubmit="return confirm('Удалить аккаунт {{ item.user.email }}? Все VPN-ключи, баланс и история платежей будут удалены без возможности восстановления.')">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button class="danger-button" type="submit">Удалить аккаунт</button>
             </form>
