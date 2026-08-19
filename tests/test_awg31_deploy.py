@@ -36,3 +36,11 @@ def test_bootstrap_ipv4_detection_avoids_awk_builtin_names() -> None:
 
     assert "for (field = 1; field <= NF; field++)" in bootstrap
     assert "for (index = 1; index <= NF; index++)" not in bootstrap
+
+
+def test_bootstrap_without_host_ignores_inherited_domain() -> None:
+    bootstrap = (ROOT / "deploy" / "vps-bootstrap.sh").read_text(encoding="utf-8")
+
+    assert 'DOMAIN=""' in bootstrap
+    assert 'DOMAIN="${DOMAIN:-}"' not in bootstrap
+    assert 'DOMAIN="$(detect_interface_ipv4 "$PUBLIC_INTERFACE")"' in bootstrap

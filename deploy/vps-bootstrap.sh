@@ -23,7 +23,10 @@ readonly AWG_SUBNET_CIDR="24"
 readonly AWG_TOOLS_RELEASE="3.1.20260812"
 readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.1.20260814@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a"
 
-DOMAIN="${DOMAIN:-}"
+# The public host is selected only by an explicit CLI option.  Without
+# --host/--domain/--ip we must always detect the address on PUBLIC_INTERFACE;
+# an inherited DOMAIN value must not silently keep a previous deployment host.
+DOMAIN=""
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 AWG_PORT="${AWG_PORT:-55424}"
