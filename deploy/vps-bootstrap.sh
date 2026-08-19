@@ -186,6 +186,7 @@ for required_file in \
   "$VENDOR_DIR/awg2/run_container.sh" \
   "$VENDOR_DIR/awg2/start.sh" \
   "$SCRIPT_DIR/awg2-start.sh" \
+  "$SCRIPT_DIR/awg2-peer-manager.sh" \
   "$SCRIPT_DIR/awg2-traffic-limit.sh" \
   "$VENDOR_DIR/build_container.sh" \
   "$VENDOR_DIR/prepare_host.sh" \
@@ -273,11 +274,16 @@ install_awg_traffic_control() {
   chmod 0755 "$GENERATED_DIR/start.sh"
   install -m 0755 "$SCRIPT_DIR/awg2-traffic-limit.sh" \
     "$GENERATED_DIR/traffic-limit.sh"
+  install -m 0755 "$SCRIPT_DIR/awg2-peer-manager.sh" \
+    "$GENERATED_DIR/peer-manager.sh"
   docker cp "$GENERATED_DIR/traffic-limit.sh" \
     "$CONTAINER_NAME:/opt/amnezia/traffic-limit.sh"
+  docker cp "$GENERATED_DIR/peer-manager.sh" \
+    "$CONTAINER_NAME:/opt/amnezia/peer-manager.sh"
   docker cp "$GENERATED_DIR/start.sh" "$CONTAINER_NAME:/opt/amnezia/start.sh"
   docker exec "$CONTAINER_NAME" chmod 0755 \
-    /opt/amnezia/traffic-limit.sh /opt/amnezia/start.sh
+    /opt/amnezia/traffic-limit.sh /opt/amnezia/peer-manager.sh \
+    /opt/amnezia/start.sh
 }
 
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -420,6 +426,7 @@ AWG_CONFIG_PATH=/opt/amnezia/awg/awg0.conf
 AWG_SAVE_CONFIG=true
 AWG_RATE_LIMIT_ENABLED=true
 AWG_RATE_LIMIT_BINARY=/opt/amnezia/traffic-limit.sh
+AWG_PEER_MANAGER_BINARY=/opt/amnezia/peer-manager.sh
 AWG_DOWNLOAD_LIMIT_MBPS=$AWG_DOWNLOAD_LIMIT_MBIT
 AWG_UPLOAD_LIMIT_MBPS=$AWG_UPLOAD_LIMIT_MBIT
 AWG_I1=$AWG_I1_VALUE
@@ -434,9 +441,9 @@ install -o root -g "$APP_USER" -m 0640 "$ENV_FILE.new" "$ENV_FILE"
 rm -f "$ENV_FILE.new"
 
 cat > /etc/sudoers.d/amnezia-service <<EOF
-Cmnd_Alias AMNEZIA_SERVICE_PEERS = $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_BIN *, \\
-                                    $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_QUICK_BIN save /opt/amnezia/awg/awg0.conf, \\
-                                    $DOCKER_BIN exec -i $CONTAINER_NAME /opt/amnezia/traffic-limit.sh *
+Cmnd_Alias AMNEZIA_SERVICE_PEERS = $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_BIN show *, \\
+                                    $DOCKER_BIN exec -i $CONTAINER_NAME $AWG_BIN showconf *, \\
+                                    $DOCKER_BIN exec -i $CONTAINER_NAME /opt/amnezia/peer-manager.sh *
 $APP_USER ALL=(root) NOPASSWD: AMNEZIA_SERVICE_PEERS
 EOF
 chmod 0440 /etc/sudoers.d/amnezia-service

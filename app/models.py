@@ -126,7 +126,9 @@ class VpnCredential(Base):
     label: Mapped[str] = mapped_column(String(120))
     public_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     assigned_ip: Mapped[str] = mapped_column(String(64), index=True)
-    config_encrypted: Mapped[str] = mapped_column(Text)
+    # Dashboards list every device but never need the encrypted client config.
+    # Load this comparatively large value only for download/QR/key restoration.
+    config_encrypted: Mapped[str] = mapped_column(Text, deferred=True)
     status: Mapped[CredentialStatus] = mapped_column(
         Enum(CredentialStatus), default=CredentialStatus.ACTIVE
     )

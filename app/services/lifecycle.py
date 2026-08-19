@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from app.config import Settings
 from app.models import (
@@ -493,19 +493,27 @@ def restore_suspended_credentials(
             select(VpnCredential).where(
                 VpnCredential.subscription_id == subscription.id,
                 VpnCredential.status == CredentialStatus.SUSPENDED,
-            )
+            ).options(undefer(VpnCredential.config_encrypted))
         )
     )
     cipher = ConfigCipher(settings)
-    restored = 0
+    pending: list[tuple[VpnCredential, str]] = []
     for credential in credentials:
         try:
             config = cipher.decrypt(credential.config_encrypted)
-            provisioner.restore(
-                credential.public_key,
-                credential.assigned_ip,
-                config,
-            )
+        except Exception:
+            continue
+        pending.append((credential, config))
+    if not pending:
+        return 0
+    try:
+        provisioner.restore_many(
+            [
+                (credential.public_key, credential.assigned_ip, config)
+                for credential, config in pending
+            ]
+        )
+        for credential, _ in pending:
             credential.rx_offset_bytes = credential.rx_bytes
             credential.tx_offset_bytes = credential.tx_bytes
             credential.status = CredentialStatus.ACTIVE
@@ -515,11 +523,11 @@ def restore_suspended_credentials(
             credential.rx_rate_bps = 0
             credential.tx_rate_bps = 0
             credential.traffic_sampled_at = None
-            db.commit()
-            restored += 1
-        except Exception:
-            db.rollback()
-    return restored
+        db.commit()
+    except Exception:
+        db.rollback()
+        return 0
+    return len(pending)
 
 
 def reconcile_suspended(

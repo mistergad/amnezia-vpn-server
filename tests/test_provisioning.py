@@ -67,25 +67,42 @@ H4 = 4
         awg_upload_limit_mbps=8,
     )
     provisioner = FakeNativeProvisioner(settings)
+    assert provisioner.assigned_ips() == set()
     issued = provisioner.provision("10.8.1.9")
     assert issued.public_key == "client-public"
     assert "PrivateKey = client-private" in issued.config
     assert "Jmin = 40" in issued.config
     assert "I1 = <r 2><b 0x0102>" in issued.config
     assert "PublicKey = server-public" in issued.config
-    set_call = next(call for call in provisioner.calls if call[0][:1] == ["set"])
-    assert "/dev/stdin" in set_call[0]
-    assert set_call[1] == "client-psk\n"
-    rate_call = next(
+    apply_call = next(
         call
         for call in provisioner.calls
-        if call[2] == "/opt/amnezia/traffic-limit.sh"
+        if call[0][:1] == ["apply"]
+        and call[2] == "/opt/amnezia/peer-manager.sh"
     )
-    assert rate_call[0] == ["apply", "awg0", "10.8.1.9", "9", "10", "8"]
+    assert apply_call[0] == [
+        "apply",
+        "awg0",
+        "client-public",
+        "10.8.1.9",
+        "9",
+        "true",
+        "10",
+        "8",
+        "false",
+        settings.awg_config_path.as_posix(),
+    ]
+    assert apply_call[1] == "client-psk\n"
     assert not any(
         call[0] in (["genkey"], ["pubkey"], ["genpsk"])
         for call in provisioner.calls
     )
+    assert not any(call[0][:1] == ["set"] for call in provisioner.calls)
+    assert not any(
+        call[2] in (settings.awg_quick_binary, settings.awg_rate_limit_binary)
+        for call in provisioner.calls
+    )
+    assert provisioner.assigned_ips() == {"10.8.1.9"}
 
     # AWG2 interface metadata is static and should be fetched only once for
     # multiple key releases.
@@ -94,21 +111,57 @@ H4 = 4
     assert "HeaderProtectionKey" not in second.config
     assert sum(call[0][-1:] == ["public-key"] for call in provisioner.calls) == 1
     assert sum(call[0][:1] == ["showconf"] for call in provisioner.calls) == 1
+    assert provisioner.assigned_ips() == {"10.8.1.9", "10.8.1.10"}
 
     provisioner.restore(issued.public_key, "10.8.1.9", issued.config)
     restore_call = [
         call for call in provisioner.calls
-        if call[0][:4] == ["set", "awg0", "peer", "client-public"]
+        if call[0][:3] == ["apply", "awg0", "client-public"]
     ][-1]
-    assert restore_call[0][-2:] == ["allowed-ips", "10.8.1.9/32"]
+    assert restore_call[0][3:5] == ["10.8.1.9", "9"]
     assert restore_call[1] == "client-psk\n"
+
+    provisioner.restore_many(
+        [
+            ("peer-public-a", "10.8.1.11", issued.config),
+            ("peer-public-b", "10.8.1.12", issued.config),
+        ]
+    )
+    batch_call = provisioner.calls[-1]
+    assert batch_call[0] == [
+        "apply-many",
+        "awg0",
+        "true",
+        "10",
+        "8",
+        "false",
+        settings.awg_config_path.as_posix(),
+    ]
+    assert batch_call[1] == (
+        "peer-public-a\t10.8.1.11\t11\tclient-psk\n"
+        "peer-public-b\t10.8.1.12\t12\tclient-psk\n"
+    )
+    assert batch_call[2] == "/opt/amnezia/peer-manager.sh"
 
     provisioner.revoke(issued.public_key, "10.8.1.9")
     assert provisioner.calls[-1] == (
-        ["remove", "awg0", "9"],
+        [
+            "remove",
+            "awg0",
+            "client-public",
+            "9",
+            "true",
+            "false",
+            settings.awg_config_path.as_posix(),
+        ],
         None,
-        "/opt/amnezia/traffic-limit.sh",
+        "/opt/amnezia/peer-manager.sh",
     )
+    assert provisioner.assigned_ips() == {
+        "10.8.1.10",
+        "10.8.1.11",
+        "10.8.1.12",
+    }
 
 
 def test_native_local_key_generation_is_wireguard_compatible() -> None:
@@ -160,24 +213,16 @@ def test_native_assigned_ips_parser() -> None:
                 "peer-three\t(none)\n"
             )
 
-    assert AssignedProvisioner(Settings()).assigned_ips() == {"10.8.1.2", "10.8.1.8"}
-
-
-def test_native_save_uses_container_config_path() -> None:
-    class SaveProvisioner(NativeAmneziaWGProvisioner):
+    class CachedAssignedProvisioner(AssignedProvisioner):
         def __init__(self, settings: Settings):
             super().__init__(settings)
-            self.call = None
+            self.reads = 0
 
         def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
-            self.call = (args, binary)
-            return ""
+            self.reads += 1
+            return super()._run(args, input_text=input_text, binary=binary)
 
-    provisioner = SaveProvisioner(
-        Settings(awg_config_path="/opt/amnezia/awg/awg0.conf", awg_quick_binary="/usr/bin/awg-quick")
-    )
-    provisioner._save()
-    assert provisioner.call == (
-        ["save", "/opt/amnezia/awg/awg0.conf"],
-        "/usr/bin/awg-quick",
-    )
+    provisioner = CachedAssignedProvisioner(Settings())
+    assert provisioner.assigned_ips() == {"10.8.1.2", "10.8.1.8"}
+    assert provisioner.assigned_ips() == {"10.8.1.2", "10.8.1.8"}
+    assert provisioner.reads == 1

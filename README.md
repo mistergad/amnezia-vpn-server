@@ -196,11 +196,12 @@ sudo docker exec amnezia-awg2 tc -s filter show dev awg0 parent ffff:
    AWG_SAVE_CONFIG=true
    AWG_RATE_LIMIT_ENABLED=true
    AWG_RATE_LIMIT_BINARY=/opt/amnezia/traffic-limit.sh
+   AWG_PEER_MANAGER_BINARY=/opt/amnezia/peer-manager.sh
    AWG_DOWNLOAD_LIMIT_MBPS=10
    AWG_UPLOAD_LIMIT_MBPS=8
    ```
 
-   Если `AWG_CONFIG_PATH` не существует на хосте, сервис автоматически читает параметры J/S/H/I через `awg showconf` внутри контейнера. Ключ `-i` у `docker exec` обязателен: preshared key передается процессу через stdin и не попадает в аргументы командной строки. Для ручного подключения rate limit также установите `iproute2` в AWG2-контейнер, скопируйте `deploy/awg2-traffic-limit.sh` в `/opt/amnezia/traffic-limit.sh` и разрешите эту команду через sudoers. Автоматический bootstrap выполняет эти действия сам.
+   Если `AWG_CONFIG_PATH` не существует на хосте, сервис автоматически читает параметры J/S/H/I через `awg showconf` внутри контейнера. Ключ `-i` у `docker exec` обязателен: preshared key передается процессу через stdin и не попадает в аргументы командной строки. Для ручного подключения установите `iproute2`, скопируйте `deploy/awg2-traffic-limit.sh` и `deploy/awg2-peer-manager.sh` в `/opt/amnezia`, затем разрешите peer-manager через sudoers. Он за один `docker exec` изменяет peer, применяет лимит и сохраняет AWG2-конфигурацию. Автоматический bootstrap выполняет эти действия сам.
 
    Unit намеренно не включает `NoNewPrivileges=true`: этот флаг блокирует разрешенный вызов `sudo`. Объем повышения прав вместо этого ограничен точным списком команд в sudoers.
 

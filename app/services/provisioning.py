@@ -48,6 +48,11 @@ class Provisioner:
         """Restore an existing peer without changing the client-side key."""
         raise NotImplementedError
 
+    def restore_many(self, peers: list[tuple[str, str, str]]) -> None:
+        """Restore multiple peers; native backends may persist them as one batch."""
+        for public_key, assigned_ip, config in peers:
+            self.restore(public_key, assigned_ip, config)
+
     def revoke(self, public_key: str, assigned_ip: str | None = None) -> None:
         raise NotImplementedError
 
@@ -132,6 +137,7 @@ class NativeAmneziaWGProvisioner(Provisioner):
         self._operation_lock = threading.RLock()
         self._server_public_key: str | None = None
         self._obfuscation_settings: dict[str, str] | None = None
+        self._assigned_ips_cache: set[str] | None = None
 
     def _run(
         self, args: list[str], *, input_text: str | None = None, binary: str | None = None
@@ -227,13 +233,6 @@ class NativeAmneziaWGProvisioner(Provisioner):
             raise ProvisioningError(f"Missing AmneziaWG parameters in server config: {missing}")
         return values
 
-    def _save(self) -> None:
-        if self.settings.awg_save_config:
-            self._run(
-                ["save", self.settings.awg_config_path.as_posix()],
-                binary=self.settings.awg_quick_binary,
-            )
-
     def _rate_limit_class_minor(self, assigned_ip: str) -> int:
         network = ipaddress.ip_network(self.settings.awg_subnet, strict=False)
         address = ipaddress.ip_address(assigned_ip)
@@ -249,35 +248,64 @@ class NativeAmneziaWGProvisioner(Provisioner):
             )
         return minor
 
-    def _apply_rate_limit(self, assigned_ip: str) -> None:
-        if not self.settings.awg_rate_limit_enabled:
-            return
+    @staticmethod
+    def _boolean_argument(value: bool) -> str:
+        return "true" if value else "false"
+
+    def _apply_peer(
+        self,
+        *,
+        public_key: str,
+        preshared_key: str,
+        assigned_ip: str,
+    ) -> None:
+        rate_limit_enabled = self.settings.awg_rate_limit_enabled
+        class_minor = (
+            self._rate_limit_class_minor(assigned_ip) if rate_limit_enabled else 0
+        )
         self._run(
             [
                 "apply",
                 self.settings.awg_interface,
+                public_key,
                 assigned_ip,
-                str(self._rate_limit_class_minor(assigned_ip)),
+                str(class_minor),
+                self._boolean_argument(rate_limit_enabled),
                 str(self.settings.awg_download_limit_mbps),
                 str(self.settings.awg_upload_limit_mbps),
+                self._boolean_argument(self.settings.awg_save_config),
+                self.settings.awg_config_path.as_posix(),
             ],
-            binary=self.settings.awg_rate_limit_binary,
+            input_text=preshared_key + "\n",
+            binary=self.settings.awg_peer_manager_binary,
         )
 
-    def _remove_rate_limit(self, assigned_ip: str) -> None:
-        if not self.settings.awg_rate_limit_enabled:
-            return
+    def _remove_peer(self, public_key: str, assigned_ip: str | None) -> None:
+        rate_limit_enabled = bool(
+            self.settings.awg_rate_limit_enabled and assigned_ip is not None
+        )
+        class_minor = (
+            self._rate_limit_class_minor(assigned_ip)
+            if rate_limit_enabled and assigned_ip is not None
+            else 0
+        )
         self._run(
             [
                 "remove",
                 self.settings.awg_interface,
-                str(self._rate_limit_class_minor(assigned_ip)),
+                public_key,
+                str(class_minor),
+                self._boolean_argument(rate_limit_enabled),
+                self._boolean_argument(self.settings.awg_save_config),
+                self.settings.awg_config_path.as_posix(),
             ],
-            binary=self.settings.awg_rate_limit_binary,
+            binary=self.settings.awg_peer_manager_binary,
         )
 
     def assigned_ips(self) -> set[str]:
         with self._operation_lock:
+            if self._assigned_ips_cache is not None:
+                return set(self._assigned_ips_cache)
             output = self._run(["show", self.settings.awg_interface, "allowed-ips"])
             assigned: set[str] = set()
             for line in output.splitlines():
@@ -291,7 +319,8 @@ class NativeAmneziaWGProvisioner(Provisioner):
                         continue
                     if network.version == 4 and network.prefixlen == 32:
                         assigned.add(str(network.network_address))
-            return assigned
+            self._assigned_ips_cache = assigned
+            return set(assigned)
 
     def provision(self, assigned_ip: str) -> ProvisionedCredential:
         with self._operation_lock:
@@ -299,16 +328,12 @@ class NativeAmneziaWGProvisioner(Provisioner):
             # Validate and cache the static AWG2 interface metadata before
             # changing the live peer.
             server_public_key, obfuscation = self._server_metadata()
-            self._run(
-                [
-                    "set", self.settings.awg_interface, "peer", public_key,
-                    "preshared-key", "/dev/stdin", "allowed-ips", f"{assigned_ip}/32",
-                ],
-                input_text=preshared_key + "\n",
+            self._apply_peer(
+                public_key=public_key,
+                preshared_key=preshared_key,
+                assigned_ip=assigned_ip,
             )
             try:
-                self._save()
-                self._apply_rate_limit(assigned_ip)
                 config = _render_client_config(
                     private_key=private_key,
                     assigned_ip=assigned_ip,
@@ -318,30 +343,24 @@ class NativeAmneziaWGProvisioner(Provisioner):
                     preshared_key=preshared_key,
                     endpoint=self.settings.awg_endpoint,
                 )
+                if self._assigned_ips_cache is not None:
+                    self._assigned_ips_cache.add(assigned_ip)
                 return ProvisionedCredential(public_key=public_key, config=config)
             except Exception:
                 try:
-                    self._run(
-                        ["set", self.settings.awg_interface, "peer", public_key, "remove"]
-                    )
-                    self._save()
+                    self._remove_peer(public_key, assigned_ip)
                 except Exception:
                     pass
                 raise
 
     def revoke(self, public_key: str, assigned_ip: str | None = None) -> None:
         with self._operation_lock:
-            self._run(["set", self.settings.awg_interface, "peer", public_key, "remove"])
-            self._save()
-            if assigned_ip:
-                try:
-                    self._remove_rate_limit(assigned_ip)
-                except ProvisioningError:
-                    # A stale tc class is harmless and is removed by the next
-                    # container/service synchronization. Peer revocation must win.
-                    pass
+            self._remove_peer(public_key, assigned_ip)
+            if assigned_ip and self._assigned_ips_cache is not None:
+                self._assigned_ips_cache.discard(assigned_ip)
 
-    def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
+    @staticmethod
+    def _preshared_key_from_config(config: str) -> str:
         parser = configparser.ConfigParser(interpolation=None, strict=False)
         try:
             parser.read_string(config)
@@ -354,26 +373,54 @@ class NativeAmneziaWGProvisioner(Provisioner):
             raise ProvisioningError(
                 "Cannot restore peer: PresharedKey is empty in the client config"
             )
+        return preshared_key
+
+    def restore(self, public_key: str, assigned_ip: str, config: str) -> None:
+        preshared_key = self._preshared_key_from_config(config)
         with self._operation_lock:
+            self._apply_peer(
+                public_key=public_key,
+                preshared_key=preshared_key,
+                assigned_ip=assigned_ip,
+            )
+            if self._assigned_ips_cache is not None:
+                self._assigned_ips_cache.add(assigned_ip)
+
+    def restore_many(self, peers: list[tuple[str, str, str]]) -> None:
+        if not peers:
+            return
+        with self._operation_lock:
+            rate_limit_enabled = self.settings.awg_rate_limit_enabled
+            records: list[str] = []
+            restored_addresses: list[str] = []
+            for public_key, assigned_ip, config in peers:
+                preshared_key = self._preshared_key_from_config(config)
+                class_minor = (
+                    self._rate_limit_class_minor(assigned_ip)
+                    if rate_limit_enabled
+                    else 0
+                )
+                records.append(
+                    "\t".join(
+                        (public_key, assigned_ip, str(class_minor), preshared_key)
+                    )
+                )
+                restored_addresses.append(assigned_ip)
             self._run(
                 [
-                    "set", self.settings.awg_interface, "peer", public_key,
-                    "preshared-key", "/dev/stdin", "allowed-ips", f"{assigned_ip}/32",
+                    "apply-many",
+                    self.settings.awg_interface,
+                    self._boolean_argument(rate_limit_enabled),
+                    str(self.settings.awg_download_limit_mbps),
+                    str(self.settings.awg_upload_limit_mbps),
+                    self._boolean_argument(self.settings.awg_save_config),
+                    self.settings.awg_config_path.as_posix(),
                 ],
-                input_text=preshared_key + "\n",
+                input_text="\n".join(records) + "\n",
+                binary=self.settings.awg_peer_manager_binary,
             )
-            try:
-                self._save()
-                self._apply_rate_limit(assigned_ip)
-            except Exception:
-                try:
-                    self._run(
-                        ["set", self.settings.awg_interface, "peer", public_key, "remove"]
-                    )
-                    self._save()
-                except Exception:
-                    pass
-                raise
+            if self._assigned_ips_cache is not None:
+                self._assigned_ips_cache.update(restored_addresses)
 
     def stats(self) -> dict[str, PeerStats]:
         with self._operation_lock:

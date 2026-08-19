@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     awg_i5: str | None = None
     awg_rate_limit_enabled: bool = False
     awg_rate_limit_binary: str = "/opt/amnezia/traffic-limit.sh"
+    awg_peer_manager_binary: str = "/opt/amnezia/peer-manager.sh"
     awg_download_limit_mbps: int = Field(default=10, ge=1, le=10000)
     awg_upload_limit_mbps: int = Field(default=8, ge=1, le=10000)
 
