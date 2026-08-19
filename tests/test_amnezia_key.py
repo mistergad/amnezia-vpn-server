@@ -77,8 +77,7 @@ def test_builds_guest_only_amnezia_vpn_key() -> None:
     assert awg["RandomTrailers"] == "on"
     assert awg["DisableCookies"] == "on"
     client = json.loads(awg["last_config"])
-    assert "MTU = 1200" in client["config"]
-    assert client["mtu"] == "1200"
+    assert client["config"] == CONFIG
     assert client["client_pub_key"] == "client-public"
     assert client["client_priv_key"] == "client-private"
     assert client["I1"] == "<r 2><b 0x0102>"

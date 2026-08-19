@@ -7,7 +7,6 @@ import json
 import zlib
 
 from app.config import Settings
-from app.services.client_config import ensure_client_mtu
 
 
 AWG_PARAMETER_NAMES = (
@@ -72,7 +71,6 @@ def build_amnezia_vpn_key(
     port. Its only credential is the already-issued AWG 3.1 client configuration.
     """
 
-    config = ensure_client_mtu(config, settings.awg_mtu)
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     parser.optionxform = str
     parser.read_string(config)

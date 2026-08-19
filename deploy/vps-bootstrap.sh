@@ -20,7 +20,6 @@ readonly AWG_BUILD_DIR="/opt/amnezia/amnezia-awg2"
 readonly GENERATED_DIR="/opt/amnezia/deploy-generated"
 readonly AWG_SUBNET_IP="10.8.1.0"
 readonly AWG_SUBNET_CIDR="24"
-readonly AWG_SERVER_MTU="1200"
 readonly AWG_RELEASE="3.1.20260812"
 readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.1.20260812@sha256:c60cc651df4a2315d67dcd5411203fa1eb1beb4cb493aa6326cfaf8359d00434"
 
@@ -333,15 +332,15 @@ verify_awg31() {
 }
 
 install_awg_traffic_control() {
-  log "Configuring AWG 3.1 server MTU $AWG_SERVER_MTU and per-device limits (${AWG_DOWNLOAD_LIMIT_MBIT} Mbit/s down, ${AWG_UPLOAD_LIMIT_MBIT} Mbit/s up)"
+  log "Configuring per-device AWG 3.1 limits (${AWG_DOWNLOAD_LIMIT_MBIT} Mbit/s down, ${AWG_UPLOAD_LIMIT_MBIT} Mbit/s up)"
   install -d -m 0755 "$GENERATED_DIR"
   if ! docker exec "$CONTAINER_NAME" sh -lc 'command -v tc >/dev/null 2>&1'; then
     docker exec "$CONTAINER_NAME" apk add --no-cache iproute2
   fi
-  export AWG_SUBNET_IP AWG_SUBNET_CIDR AWG_SERVER_MTU
+  export AWG_SUBNET_IP AWG_SUBNET_CIDR
   export AWG_DOWNLOAD_LIMIT_MBIT AWG_UPLOAD_LIMIT_MBIT
   export WIREGUARD_SUBNET_CIDR="$AWG_SUBNET_CIDR"
-  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_SERVER_MTU} ${AWG_DOWNLOAD_LIMIT_MBIT} ${AWG_UPLOAD_LIMIT_MBIT}' \
+  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_DOWNLOAD_LIMIT_MBIT} ${AWG_UPLOAD_LIMIT_MBIT}' \
     < "$SCRIPT_DIR/awg2-start.sh" \
     > "$GENERATED_DIR/start.sh"
   chmod 0755 "$GENERATED_DIR/start.sh"
@@ -352,7 +351,6 @@ install_awg_traffic_control() {
   docker cp "$GENERATED_DIR/start.sh" "$CONTAINER_NAME:/opt/amnezia/start.sh"
   docker exec "$CONTAINER_NAME" chmod 0755 \
     /opt/amnezia/traffic-limit.sh /opt/amnezia/start.sh
-  docker exec "$CONTAINER_NAME" ip link set dev awg0 mtu "$AWG_SERVER_MTU"
 }
 
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -523,7 +521,6 @@ AWG_INTERFACE=awg0
 AWG_ENDPOINT=$DOMAIN:$AWG_PORT
 AWG_SUBNET=$AWG_SUBNET_IP/$AWG_SUBNET_CIDR
 AWG_DNS=1.1.1.1,1.0.0.1
-AWG_MTU=1200
 AWG_COMMAND_PREFIX=["sudo","-n","$DOCKER_BIN","exec","-i","$CONTAINER_NAME"]
 AWG_BINARY=$AWG_BIN
 AWG_QUICK_BINARY=$AWG_QUICK_BIN

@@ -11,7 +11,6 @@ awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null || true
 
 chmod 0600 /opt/amnezia/awg/awg0.conf
 if [ -f /opt/amnezia/awg/awg0.conf ]; then (awg-quick up /opt/amnezia/awg/awg0.conf); fi
-ip link set dev awg0 mtu ${AWG_SERVER_MTU}
 
 # Allow traffic on the TUN interface.
 iptables -A INPUT -i awg0 -j ACCEPT
