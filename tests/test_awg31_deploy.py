@@ -29,3 +29,10 @@ def test_vendored_server_config_enables_awg31_features() -> None:
 
     assert "RandomTrailers = $RANDOM_TRAILERS" in configure
     assert "DisableCookies = $DISABLE_COOKIES" in configure
+
+
+def test_bootstrap_ipv4_detection_avoids_awk_builtin_names() -> None:
+    bootstrap = (ROOT / "deploy" / "vps-bootstrap.sh").read_text(encoding="utf-8")
+
+    assert "for (field = 1; field <= NF; field++)" in bootstrap
+    assert "for (index = 1; index <= NF; index++)" not in bootstrap

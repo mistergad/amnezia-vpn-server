@@ -124,9 +124,9 @@ detect_interface_ipv4() {
   local interface="$1" route_line detected
   route_line="$(ip -4 route get 1.1.1.1 oif "$interface" 2>/dev/null || true)"
   detected="$(awk '{
-    for (index = 1; index <= NF; index++) {
-      if ($index == "src" && index < NF) {
-        print $(index + 1)
+    for (field = 1; field <= NF; field++) {
+      if ($field == "src" && field < NF) {
+        print $(field + 1)
         exit
       }
     }
