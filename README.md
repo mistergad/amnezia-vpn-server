@@ -141,13 +141,13 @@ sudo bash deploy/vps-bootstrap.sh --ip-tls-mode internal
 
 Bootstrap автоматически устанавливает Docker, PostgreSQL, Caddy и systemd-службу, собирает официальный контейнер AWG 3.1, создает БД, секреты и HTTPS-конфигурацию. Для каждого устройства по внутреннему VPN-IP настраиваются лимиты `10 Мбит/с` на загрузку и `8 Мбит/с` на отдачу; значения можно изменить параметрами `--download-limit-mbps` и `--upload-limit-mbps`. Скрипт можно запускать повторно: существующий AWG 3.1-контейнер `amnezia-awg2` не пересоздается, его peer-ключи сохраняются, а ограничения синхронизируются со всеми живыми peer. Историческое имя контейнера сохраняется самим официальным клиентом и не означает версию протокола.
 
-Серверные скрипты AWG 3.1 перенесены из `amnezia-vpn/amnezia-client`; добавления 3.1 синхронизированы с commit `b1a37b3779644b9daad1179d40a74f2231beec99`. Серверный образ закреплен на `amneziavpn/amneziawg-go:3.1.20260812` вместе с immutable digest. Происхождение и GPL-3.0 лицензия описаны в `deploy/vendor/amnezia-client/UPSTREAM.md`. Перед созданием контейнера bootstrap проверяет поддержку `RandomTrailers` и `DisableCookies` одновременно в backend и `awg-tools`; это убирает интерактивную установку через десктопный клиент и не позволяет будущему изменению репозитория незаметно поменять deploy.
+Серверные скрипты AWG 3.1 перенесены из `amnezia-vpn/amnezia-client`; добавления 3.1 синхронизированы с commit `b1a37b3779644b9daad1179d40a74f2231beec99`. Серверный образ закреплен на исправленном `amneziavpn/amneziawg-go:3.1.20260814` вместе с immutable digest; он содержит `awg-tools v3.1.20260812` и исправление обработки `RandomTrailers`. Происхождение и GPL-3.0 лицензия описаны в `deploy/vendor/amnezia-client/UPSTREAM.md`. Перед созданием контейнера bootstrap проверяет поддержку `RandomTrailers` и `DisableCookies` одновременно в backend и `awg-tools`; это убирает интерактивную установку через десктопный клиент и не позволяет будущему изменению репозитория незаметно поменять deploy.
 
 Ссылка на релиз
 [`amneziawg-linux-kernel-module v3.1.20260812`](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/releases/tag/v3.1.20260812)
 используется как
 версия протокольного набора. Сам проект сохраняет прежнюю Docker-архитектуру и
-запускает официальный совместимый `amneziawg-go:3.1.20260812` в userspace;
+запускает официальный совместимый `amneziawg-go:3.1.20260814` в userspace;
 kernel module и DKMS на хост автоматически не устанавливаются. Это AWG 3.1 с
 теми же `RandomTrailers`/`DisableCookies`, но без зависимости от конкретного
 ядра Ubuntu.

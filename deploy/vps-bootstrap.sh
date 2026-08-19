@@ -20,8 +20,8 @@ readonly AWG_BUILD_DIR="/opt/amnezia/amnezia-awg2"
 readonly GENERATED_DIR="/opt/amnezia/deploy-generated"
 readonly AWG_SUBNET_IP="10.8.1.0"
 readonly AWG_SUBNET_CIDR="24"
-readonly AWG_RELEASE="3.1.20260812"
-readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.1.20260812@sha256:c60cc651df4a2315d67dcd5411203fa1eb1beb4cb493aa6326cfaf8359d00434"
+readonly AWG_TOOLS_RELEASE="3.1.20260812"
+readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.1.20260814@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a"
 
 DOMAIN="${DOMAIN:-}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
@@ -320,7 +320,7 @@ report_awg_failure() {
 verify_awg31() {
   local config parameter tools_version
   tools_version="$(docker exec "$CONTAINER_NAME" awg --version)" || return 1
-  grep -Fq "$AWG_RELEASE" <<< "$tools_version" || return 1
+  grep -Fq "$AWG_TOOLS_RELEASE" <<< "$tools_version" || return 1
   config="$(docker exec "$CONTAINER_NAME" awg showconf awg0)" || return 1
   for parameter in HeaderProtectionKey ContentPaddingAddition RekeyAfterTime \
     RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts \
@@ -390,10 +390,14 @@ else
   export CONTAINER_NAME DOCKERFILE_FOLDER AWG_SERVER_PORT
   bash "$VENDOR_DIR/prepare_host.sh"
   bash "$VENDOR_DIR/build_container.sh"
+  image_tools_version="$(docker run --rm --entrypoint /usr/bin/awg \
+    "$CONTAINER_NAME" --version | tr -d '\r')"
+  if ! grep -Fq "$AWG_TOOLS_RELEASE" <<< "$image_tools_version"; then
+    die "The pinned image contains incompatible awg-tools: $image_tools_version"
+  fi
   if ! docker run --rm --entrypoint /bin/sh "$CONTAINER_NAME" -ec \
-      "grep -a -q RandomTrailers /usr/bin/awg && \
-       grep -a -q random_trailers /usr/bin/amneziawg-go"; then
-    die "The pinned image does not contain matching AWG 3.1 backend and tools binaries."
+      "grep -a -q random_trailers /usr/bin/amneziawg-go"; then
+    die "The pinned image does not contain an AWG 3.1 userspace backend."
   fi
   bash "$VENDOR_DIR/awg2/run_container.sh"
   HEADER_PROTECTION_KEY="$(docker exec "$CONTAINER_NAME" awg genkey | tr -d '\r\n')"

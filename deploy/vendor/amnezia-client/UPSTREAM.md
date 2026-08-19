@@ -15,8 +15,8 @@ project-owned `deploy/vps-bootstrap.sh` wrapper renders and runs these pinned
 scripts. The `RandomTrailers` and `DisableCookies` additions in
 `awg2/configure_container.sh` are synchronized with upstream commit
 `b1a37b3779644b9daad1179d40a74f2231beec99`. The wrapper pins the official
-image to `amneziavpn/amneziawg-go:3.1.20260812` and its OCI index digest
-`sha256:c60cc651df4a2315d67dcd5411203fa1eb1beb4cb493aa6326cfaf8359d00434`,
+image to `amneziavpn/amneziawg-go:3.1.20260814` and its OCI index digest
+`sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a`,
 so a future upstream change cannot silently alter a server deployment. The
 bootstrap also checks that both `awg` and `amneziawg-go` contain their AWG 3.1
 configuration symbols before creating the VPN container.
