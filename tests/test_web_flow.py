@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import CredentialStatus, Payment, PaymentStatus, Subscription, User, VpnCredential
+from app.models import CredentialStatus, Payment, Subscription, User, VpnCredential
 from app.models import SubscriptionStatus, utcnow
 from app.services.lifecycle import balance_kopecks, reconcile_expired, refresh_peer_stats
 
@@ -19,7 +19,52 @@ def csrf(html: str) -> str:
     return match.group(1)
 
 
-def test_registration_payment_key_and_revoke_flow() -> None:
+def login_as(client: TestClient, email: str, password: str) -> None:
+    page = client.get("/login")
+    response = client.post(
+        "/login",
+        data={"email": email, "password": password, "csrf_token": csrf(page.text)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+
+def manage_customer_as_admin(
+    client: TestClient,
+    *,
+    email: str,
+    amount_rubles: int,
+    device_label: str | None = None,
+) -> str:
+    with SessionLocal() as db:
+        customer = db.scalar(select(User).where(User.email == email))
+        assert customer
+        customer_id = customer.id
+
+    client.cookies.clear()
+    login_as(client, "admin@test.local", "strong-test-admin-password")
+    client_page = client.get(f"/admin/clients/{customer_id}")
+    updated = client.post(
+        f"/admin/clients/{customer_id}/balance",
+        data={"amount_rubles": str(amount_rubles), "csrf_token": csrf(client_page.text)},
+        follow_redirects=False,
+    )
+    assert updated.status_code == 303
+    if device_label:
+        client_page = client.get(f"/admin/clients/{customer_id}")
+        added = client.post(
+            f"/admin/clients/{customer_id}/devices",
+            data={"label": device_label, "csrf_token": csrf(client_page.text)},
+            follow_redirects=False,
+        )
+        assert added.status_code == 303
+
+    client.cookies.clear()
+    login_as(client, email, "very-secure-password")
+    return customer_id
+
+
+def test_registration_admin_activation_key_and_revoke_flow() -> None:
     with TestClient(app) as client:
         page = client.get("/register")
         response = client.post(
@@ -33,38 +78,30 @@ def test_registration_payment_key_and_revoke_flow() -> None:
         )
         assert response.status_code == 303
         dashboard = client.get("/app")
-        assert "Запустить VPN" in dashboard.text
+        assert "Ожидается активация" in dashboard.text
+        assert "Обратитесь к администратору" in dashboard.text
+        assert 'action="/balance/topup"' not in dashboard.text
+        assert client.post("/balance/topup", data={"amount_rubles": "300"}).status_code == 404
+        assert client.get("/payments/mock/unknown").status_code == 404
+        assert client.post(
+            "/webhooks/yookassa", json={"object": {"id": "unknown"}}
+        ).status_code == 404
 
-        response = client.post(
-            "/balance/topup",
-            data={
-                "amount_rubles": "300",
-                "csrf_token": csrf(dashboard.text),
-            },
-            follow_redirects=False,
+        manage_customer_as_admin(
+            client,
+            email="client@example.com",
+            amount_rubles=300,
+            device_label="Первое устройство",
         )
-        assert response.status_code == 303
-        assert "/payments/mock/" in response.headers["location"]
-
-        payment_page = client.get(response.headers["location"])
-        paid = client.post(
-            response.headers["location"] + "/confirm",
-            data={"csrf_token": csrf(payment_page.text)},
-            follow_redirects=False,
-        )
-        assert paid.status_code == 303
         dashboard = client.get("/app")
         assert "Первое устройство" in dashboard.text
         assert "Скачать .conf" in dashboard.text
         assert "Скопировать ключ" in dashboard.text
 
         with SessionLocal() as db:
-            payment = db.scalar(select(Payment).where(Payment.user.has(email="client@example.com")))
             credential = db.scalar(
                 select(VpnCredential).where(VpnCredential.user.has(email="client@example.com"))
             )
-            assert payment and payment.status == PaymentStatus.SUCCEEDED
-            assert payment.amount_kopecks == 30_000
             assert credential and credential.status == CredentialStatus.ACTIVE
             credential_id = credential.id
             subscription_id = credential.subscription_id
@@ -74,25 +111,6 @@ def test_registration_payment_key_and_revoke_flow() -> None:
             assert user and user.balance_units > 0
             expiry_with_one_device = subscription.expires_at
             assert "PrivateKey" not in credential.config_encrypted
-
-        # A repeated provider notification is idempotent and issues no second key.
-        repeated = client.post(
-            response.headers["location"] + "/confirm",
-            data={"csrf_token": csrf(dashboard.text)},
-            follow_redirects=False,
-        )
-        assert repeated.status_code == 303
-        with SessionLocal() as db:
-            credentials_count = len(
-                list(
-                    db.scalars(
-                        select(VpnCredential).where(
-                            VpnCredential.subscription_id == subscription_id
-                        )
-                    )
-                )
-            )
-            assert credentials_count == 1
 
         # Adding a key automatically increases burn rate and shortens the forecast.
         added = client.post(
@@ -151,20 +169,12 @@ def test_registration_payment_key_and_revoke_flow() -> None:
         assert client.get(f"/app/devices/{credential_id}/config").status_code == 410
         assert client.get(f"/app/devices/{credential_id}/key").status_code == 410
 
-        # A key revoked by the customer remains permanently revoked after top-up.
-        dashboard = client.get("/app")
-        topup = client.post(
-            "/balance/topup",
-            data={"amount_rubles": "100", "csrf_token": csrf(dashboard.text)},
-            follow_redirects=False,
+        # A customer-revoked key remains revoked after an administrator changes the balance.
+        manage_customer_as_admin(
+            client,
+            email="client@example.com",
+            amount_rubles=100,
         )
-        payment_page = client.get(topup.headers["location"])
-        confirmed = client.post(
-            topup.headers["location"] + "/confirm",
-            data={"csrf_token": csrf(payment_page.text)},
-            follow_redirects=False,
-        )
-        assert confirmed.status_code == 303
         with SessionLocal() as db:
             credential = db.get(VpnCredential, credential_id)
             assert credential and credential.status == CredentialStatus.REVOKED
@@ -344,7 +354,7 @@ def test_admin_can_edit_balance_and_add_device() -> None:
         )
 
 
-def test_expired_key_is_restored_after_balance_topup() -> None:
+def test_expired_key_is_restored_after_admin_balance_update() -> None:
     email = "resume-key@example.com"
     with TestClient(app) as client:
         register_page = client.get("/register")
@@ -359,19 +369,12 @@ def test_expired_key_is_restored_after_balance_topup() -> None:
         )
         assert registered.status_code == 303
 
-        dashboard = client.get("/app")
-        first_payment = client.post(
-            "/balance/topup",
-            data={"amount_rubles": "100", "csrf_token": csrf(dashboard.text)},
-            follow_redirects=False,
+        manage_customer_as_admin(
+            client,
+            email=email,
+            amount_rubles=100,
+            device_label="Первое устройство",
         )
-        payment_page = client.get(first_payment.headers["location"])
-        confirmed = client.post(
-            first_payment.headers["location"] + "/confirm",
-            data={"csrf_token": csrf(payment_page.text)},
-            follow_redirects=False,
-        )
-        assert confirmed.status_code == 303
 
         with SessionLocal() as db:
             user = db.scalar(select(User).where(User.email == email))
@@ -405,19 +408,13 @@ def test_expired_key_is_restored_after_balance_topup() -> None:
         dashboard = client.get("/app")
         assert "Возобновить VPN" in dashboard.text
         assert "Повторный импорт не потребуется" in dashboard.text
+        assert "пополнения администратором" in dashboard.text
 
-        second_payment = client.post(
-            "/balance/topup",
-            data={"amount_rubles": "100", "csrf_token": csrf(dashboard.text)},
-            follow_redirects=False,
+        manage_customer_as_admin(
+            client,
+            email=email,
+            amount_rubles=100,
         )
-        payment_page = client.get(second_payment.headers["location"])
-        resumed = client.post(
-            second_payment.headers["location"] + "/confirm",
-            data={"csrf_token": csrf(payment_page.text)},
-            follow_redirects=False,
-        )
-        assert resumed.status_code == 303
 
         with SessionLocal() as db:
             credentials = list(
@@ -469,19 +466,12 @@ def test_admin_can_delete_device_and_customer_account() -> None:
         )
         assert registered.status_code == 303
 
-        dashboard = client.get("/app")
-        payment = client.post(
-            "/balance/topup",
-            data={"amount_rubles": "100", "csrf_token": csrf(dashboard.text)},
-            follow_redirects=False,
+        manage_customer_as_admin(
+            client,
+            email=email,
+            amount_rubles=100,
+            device_label="Первое устройство",
         )
-        payment_page = client.get(payment.headers["location"])
-        confirmed = client.post(
-            payment.headers["location"] + "/confirm",
-            data={"csrf_token": csrf(payment_page.text)},
-            follow_redirects=False,
-        )
-        assert confirmed.status_code == 303
 
         with SessionLocal() as db:
             customer = db.scalar(select(User).where(User.email == email))

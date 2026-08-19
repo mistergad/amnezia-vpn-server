@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import ipaddress
-import secrets
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, or_, select, text
@@ -12,7 +10,6 @@ from app.config import Settings
 from app.models import (
     CredentialStatus,
     Payment,
-    PaymentStatus,
     Plan,
     Subscription,
     SubscriptionStatus,
@@ -22,7 +19,6 @@ from app.models import (
     utcnow,
 )
 from app.security import ConfigCipher, hash_password, normalize_email
-from app.services.payments import PaymentProvider, VerifiedPayment
 from app.services.provisioning import Provisioner
 
 
@@ -47,7 +43,7 @@ def seed_data(db: Session, settings: Settings) -> None:
         ("month", "Архивный: 1 месяц", 29900, 30, 3, False),
         ("quarter", "Архивный: 3 месяца", 74900, 90, 5, False),
         ("year", "Архивный: 1 год", 249900, 365, 7, False),
-        ("balance", "Пополнение баланса", 10000, 30, 1, True),
+        ("balance", "Баланс клиента", 10000, 30, 1, True),
     ]
     for slug, name, price, days, devices, active in plans:
         plan = db.scalar(select(Plan).where(Plan.slug == slug))
@@ -270,14 +266,6 @@ def set_customer_balance(
     return subscription
 
 
-def _units_for_payment(amount_kopecks: int) -> int:
-    if amount_kopecks < PRICE_PER_DEVICE_MONTH_KOPECKS:
-        raise BusinessRuleError("Минимальное пополнение — 100 ₽")
-    if amount_kopecks % PRICE_PER_DEVICE_MONTH_KOPECKS:
-        raise BusinessRuleError("Сумма пополнения должна быть кратна 100 ₽")
-    return amount_kopecks * BILLING_MONTH_SECONDS // PRICE_PER_DEVICE_MONTH_KOPECKS
-
-
 def settle_subscription(
     db: Session, subscription: Subscription, *, now: datetime | None = None
 ) -> Subscription:
@@ -315,151 +303,6 @@ def settle_subscription(
     if seconds_left <= 0:
         subscription.status = SubscriptionStatus.EXPIRED
     return subscription
-
-
-def create_balance_payment(
-    db: Session,
-    *,
-    user: User,
-    amount_rubles: int,
-    provider: PaymentProvider,
-    return_url: str,
-) -> Payment:
-    amount_kopecks = amount_rubles * 100
-    _units_for_payment(amount_kopecks)
-    plan = db.scalar(select(Plan).where(Plan.slug == "balance"))
-    if not plan:
-        raise BusinessRuleError("Балансовый тариф не настроен")
-    payment = Payment(
-        id=str(uuid.uuid4()),
-        user_id=user.id,
-        plan_id=plan.id,
-        provider=provider.name,
-        idempotency_key=secrets.token_hex(16),
-        amount_kopecks=amount_kopecks,
-        requested_device_limit=1,
-        currency="RUB",
-        status=PaymentStatus.PENDING,
-    )
-    payment.plan = plan
-    db.add(payment)
-    db.flush()
-    try:
-        confirmation = provider.create(payment, return_url)
-    except Exception:
-        db.rollback()
-        raise
-    payment.provider_payment_id = confirmation.provider_payment_id
-    payment.confirmation_url = confirmation.confirmation_url
-    db.commit()
-    return payment
-
-
-def activate_payment(db: Session, payment: Payment) -> Subscription:
-    payment = db.scalar(select(Payment).where(Payment.id == payment.id).with_for_update())
-    if payment is None:
-        raise BusinessRuleError("Платеж не найден")
-    if payment.status == PaymentStatus.SUCCEEDED:
-        subscription = db.get(Subscription, payment.subscription_id)
-        if not subscription:
-            raise BusinessRuleError("Платеж активирован некорректно")
-        return subscription
-    now = utcnow()
-    user = db.scalar(select(User).where(User.id == payment.user_id).with_for_update())
-    if not user:
-        raise BusinessRuleError("Пользователь платежа не найден")
-    payment.status = PaymentStatus.SUCCEEDED
-    payment.paid_at = now
-    subscription = db.scalar(
-        select(Subscription)
-        .where(
-            Subscription.user_id == payment.user_id,
-            Subscription.status == SubscriptionStatus.ACTIVE,
-        )
-        .order_by(Subscription.created_at.desc())
-        .limit(1)
-        .with_for_update()
-    )
-    if subscription:
-        settle_subscription(db, subscription, now=now)
-    if not subscription:
-        subscription = db.scalar(
-            select(Subscription)
-            .where(
-                Subscription.user_id == payment.user_id,
-                Subscription.status == SubscriptionStatus.EXPIRED,
-            )
-            .order_by(Subscription.created_at.desc())
-            .limit(1)
-            .with_for_update()
-        )
-    if subscription and subscription.status == SubscriptionStatus.EXPIRED:
-        previous_expiry = as_utc(subscription.expires_at)
-        if previous_expiry:
-            legacy_expired_credentials = list(
-                db.scalars(
-                    select(VpnCredential).where(
-                        VpnCredential.subscription_id == subscription.id,
-                        VpnCredential.status == CredentialStatus.REVOKED,
-                    )
-                )
-            )
-            for credential in legacy_expired_credentials:
-                revoked_at = as_utc(credential.revoked_at)
-                if revoked_at and revoked_at >= previous_expiry:
-                    credential.status = CredentialStatus.SUSPENDED
-                    credential.suspended_at = credential.revoked_at
-                    credential.revoked_at = None
-    if not subscription:
-        subscription = Subscription(
-            user_id=payment.user_id,
-            plan_id=payment.plan_id,
-            status=SubscriptionStatus.ACTIVE,
-            starts_at=now,
-            expires_at=None,
-            device_limit=0,
-            last_billed_at=now,
-        )
-        db.add(subscription)
-        db.flush()
-    user.balance_units += _units_for_payment(payment.amount_kopecks)
-    billable_devices = db.scalar(
-        select(func.count(VpnCredential.id)).where(
-            VpnCredential.subscription_id == subscription.id,
-            VpnCredential.status.in_(
-                [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
-            ),
-        )
-    ) or 0
-    subscription.plan_id = payment.plan_id
-    subscription.status = SubscriptionStatus.ACTIVE
-    subscription.device_limit = billable_devices
-    subscription.last_billed_at = now
-    subscription.expires_at = (
-        now + timedelta(seconds=user.balance_units // subscription.device_limit)
-        if subscription.device_limit
-        else None
-    )
-    payment.subscription_id = subscription.id
-    db.commit()
-    return subscription
-
-
-def apply_verified_payment(db: Session, verified: VerifiedPayment) -> Subscription | None:
-    payment = db.scalar(
-        select(Payment).where(Payment.provider_payment_id == verified.provider_payment_id)
-    )
-    if not payment or verified.internal_payment_id != payment.id:
-        raise BusinessRuleError("Платеж не соответствует внутреннему заказу")
-    if verified.amount_kopecks != payment.amount_kopecks or verified.currency != payment.currency:
-        raise BusinessRuleError("Сумма или валюта платежа не совпадает")
-    if verified.status == "canceled":
-        payment.status = PaymentStatus.CANCELED
-        db.commit()
-        return None
-    if verified.status != "succeeded":
-        return None
-    return activate_payment(db, payment)
 
 
 def _lock_address_pool(db: Session) -> None:
@@ -506,7 +349,7 @@ def create_credential(
     if not subscription or subscription.status != SubscriptionStatus.ACTIVE:
         raise BusinessRuleError("Нужна активная подписка")
     if subscription.user.balance_units <= 0:
-        raise BusinessRuleError("Пополните баланс перед добавлением устройства")
+        raise BusinessRuleError("Обратитесь к администратору для пополнения баланса")
     count = db.scalar(
         select(func.count(VpnCredential.id)).where(
             VpnCredential.subscription_id == subscription.id,

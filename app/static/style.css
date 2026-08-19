@@ -96,10 +96,6 @@ button.is-busy::after { content: ""; display: inline-block; width: 12px; height:
 .limit-form input { width: 82px; margin: 0; padding: 9px; }
 .limit-form .ghost-button { padding: 8px 12px; }
 .balance-topup { align-items: flex-start; }
-.balance-form.horizontal { display: grid; grid-template-columns: 130px 110px minmax(180px, 1fr) auto; align-items: end; gap: 10px; min-width: 650px; padding: 0; border: 0; background: transparent; }
-.balance-form.horizontal.no-device-field { grid-template-columns: 150px minmax(220px, 1fr) auto; min-width: 540px; }
-.balance-form.horizontal label { margin: 0; }
-.balance-form.horizontal .forecast { margin: 0; min-height: 48px; }
 .subscription-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; padding: 5px 5px 25px; border-bottom: 1px solid var(--line); }
 .subscription-meta span, .subscription-meta strong { display: block; }
 .subscription-meta strong { margin-top: 4px; font-size: 18px; }
@@ -117,11 +113,6 @@ button.is-busy::after { content: ""; display: inline-block; width: 12px; height:
 .renew-block { display: flex; justify-content: space-between; align-items: center; margin-top: 50px; margin-bottom: 100px; padding: 30px; border: 1px solid var(--line); border-radius: var(--radius); }
 .renew-actions { display: flex; gap: 8px; }
 .centered { grid-template-columns: minmax(300px, 520px); justify-content: center; }
-.payment-card { text-align: center; }
-.payment-card h1 { margin: 25px 0 5px; }
-.payment-card .price { font-size: 45px; font-weight: 800; }
-.payment-card p { color: var(--muted); }
-.payment-card .ghost-button { margin-top: 10px; }
 .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 25px; }
 .metric-grid article { padding: 24px; border: 1px solid var(--line); border-radius: 17px; background: var(--panel); }
 .metric-grid span, .metric-grid strong { display: block; }
@@ -178,16 +169,12 @@ td small { display: block; margin-top: 4px; }
   .auth-wrap { grid-template-columns: 1fr; gap: 35px; padding-top: 55px; } .auth-copy h1 { font-size: 58px; }
   .subscription-meta, .metric-grid, .balance-overview, .balance-start, .client-summary-grid, .admin-control-grid { grid-template-columns: 1fr; } .renew-block, .section-heading, .destructive-zone { align-items: flex-start; flex-direction: column; gap: 25px; }
   .renew-actions { width: 100%; flex-direction: column; } .renew-actions form, .renew-actions button { width: 100%; }
-  .balance-form.horizontal { min-width: 0; width: 100%; grid-template-columns: 1fr 1fr; }
-  .balance-form.horizontal.no-device-field { min-width: 0; grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 540px) {
   .shell { width: min(100% - 24px, 1180px); } .nav { height: 68px; } .nav nav { gap: 12px; } .nav nav > a:first-of-type { display: none; }
   .hero h1 { font-size: 57px; } .hero-actions { flex-direction: column; } .trust-row { gap: 12px; flex-direction: column; }
   .dashboard-head { align-items: flex-start; flex-direction: column; gap: 20px; } .dashboard-head h1 { font-size: 48px; }
   .device-actions { flex-wrap: wrap; } .footer { flex-direction: column; gap: 7px; }
-  .balance-form.horizontal { grid-template-columns: 1fr; }
-  .balance-form.horizontal.no-device-field { grid-template-columns: 1fr; }
   .client-actions { align-items: stretch; flex-direction: column; }
   .admin-control-card { grid-template-columns: 1fr; }
 }

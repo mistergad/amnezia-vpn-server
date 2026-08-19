@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session, selectinload
 from app.database import get_db
 from app.models import (
     CredentialStatus,
-    Payment,
     Subscription,
     SubscriptionStatus,
     User,
@@ -26,15 +25,11 @@ from app.security import ConfigCipher, hash_password, new_csrf_token, normalize_
 from app.services.amnezia_key import build_amnezia_vpn_key
 from app.services.lifecycle import (
     BusinessRuleError,
-    activate_payment,
-    apply_verified_payment,
     as_utc,
     balance_kopecks,
     create_credential,
-    create_balance_payment,
     delete_credential,
     delete_customer_account,
-    ensure_first_credential,
     reconcile_expired,
     refresh_peer_stats,
     restore_suspended_credentials,
@@ -148,7 +143,7 @@ def _client_summary(user: User) -> dict[str, object]:
             SubscriptionStatus.ACTIVE: ("active", "Активен", "online"),
             SubscriptionStatus.EXPIRED: ("expired", "Истёк", "revoked"),
             SubscriptionStatus.CANCELED: ("canceled", "Отменён", "revoked"),
-            SubscriptionStatus.PENDING: ("pending", "Ожидает оплаты", ""),
+            SubscriptionStatus.PENDING: ("pending", "Ожидает активации", ""),
         }
         status, status_label, status_class = labels[subscription.status]
     return {
@@ -255,11 +250,6 @@ def customer_dashboard(request: Request, db: Db) -> Response:
         if subscription.status == SubscriptionStatus.ACTIVE:
             settle_subscription(db, subscription)
     db.commit()
-    payments = list(
-        db.scalars(
-            select(Payment).where(Payment.user_id == user.id).order_by(desc(Payment.created_at)).limit(10)
-        )
-    )
     resumable_subscription = next(
         (item for item in subscriptions if item.status == SubscriptionStatus.ACTIVE),
         next(
@@ -281,7 +271,6 @@ def customer_dashboard(request: Request, db: Db) -> Response:
         "dashboard.html",
         db,
         subscriptions=subscriptions,
-        payments=payments,
         balance_rubles=balance_kopecks(user) / 100,
         price_per_device=100,
         max_devices=request.app.state.settings.max_devices_per_subscription,
@@ -289,96 +278,6 @@ def customer_dashboard(request: Request, db: Db) -> Response:
         is_connected=_is_connected,
         suspended_devices=suspended_devices,
     )
-
-
-@router.post("/balance/topup")
-def topup_balance(
-    request: Request,
-    db: Db,
-    amount_rubles: Annotated[int, Form()],
-    csrf_token: Annotated[str, Form()],
-) -> Response:
-    _check_csrf(request, csrf_token)
-    user = _user(request, db)
-    if not user:
-        return _redirect_login()
-    payment = create_balance_payment(
-        db,
-        user=user,
-        amount_rubles=amount_rubles,
-        provider=request.app.state.payment_provider,
-        return_url=f"{request.app.state.settings.base_url}/app",
-    )
-    return RedirectResponse(payment.confirmation_url or "/app", 303)
-
-
-@router.get("/payments/mock/{payment_id}", response_class=HTMLResponse)
-def mock_payment_page(request: Request, db: Db, payment_id: str) -> Response:
-    if request.app.state.settings.payment_provider != "mock":
-        raise HTTPException(404)
-    user = _user(request, db)
-    if not user:
-        return _redirect_login()
-    payment = db.get(Payment, payment_id)
-    if not payment or payment.user_id != user.id:
-        raise HTTPException(404, "Платеж не найден")
-    return _render(request, "mock_payment.html", db, payment=payment)
-
-
-@router.post("/payments/mock/{payment_id}/confirm")
-def mock_payment_confirm(
-    request: Request,
-    db: Db,
-    payment_id: str,
-    csrf_token: Annotated[str, Form()],
-) -> Response:
-    if request.app.state.settings.payment_provider != "mock":
-        raise HTTPException(404)
-    _check_csrf(request, csrf_token)
-    user = _require_user(request, db)
-    payment = db.get(Payment, payment_id)
-    if not payment or payment.user_id != user.id:
-        raise HTTPException(404, "Платеж не найден")
-    subscription = activate_payment(db, payment)
-    restore_suspended_credentials(
-        db,
-        subscription=subscription,
-        settings=request.app.state.settings,
-        provisioner=request.app.state.provisioner,
-    )
-    ensure_first_credential(
-        db,
-        subscription=subscription,
-        settings=request.app.state.settings,
-        provisioner=request.app.state.provisioner,
-    )
-    return RedirectResponse("/app", 303)
-
-
-@router.post("/webhooks/yookassa")
-async def yookassa_webhook(request: Request, db: Db) -> JSONResponse:
-    if request.app.state.settings.payment_provider != "yookassa":
-        raise HTTPException(404)
-    payload = await request.json()
-    provider_id = payload.get("object", {}).get("id")
-    if not isinstance(provider_id, str):
-        raise HTTPException(400, "Invalid event")
-    verified = request.app.state.payment_provider.verify(provider_id)
-    subscription = apply_verified_payment(db, verified)
-    if subscription:
-        restore_suspended_credentials(
-            db,
-            subscription=subscription,
-            settings=request.app.state.settings,
-            provisioner=request.app.state.provisioner,
-        )
-        ensure_first_credential(
-            db,
-            subscription=subscription,
-            settings=request.app.state.settings,
-            provisioner=request.app.state.provisioner,
-        )
-    return JSONResponse({"ok": True})
 
 
 @router.post("/app/devices")

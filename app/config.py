@@ -26,10 +26,6 @@ class Settings(BaseSettings):
     admin_email: str = "admin@example.com"
     admin_password: str = "admin123456"
 
-    payment_provider: str = "mock"
-    yookassa_shop_id: str | None = None
-    yookassa_secret_key: str | None = None
-
     vpn_backend: str = "mock"
     awg_binary: str = "awg"
     awg_quick_binary: str = "awg-quick"
@@ -75,10 +71,6 @@ class Settings(BaseSettings):
                 raise ValueError("BASE_URL must use HTTPS in production")
             if not self.session_https_only:
                 raise ValueError("SESSION_HTTPS_ONLY must be true in production")
-        if self.payment_provider == "yookassa" and not (
-            self.yookassa_shop_id and self.yookassa_secret_key
-        ):
-            raise ValueError("YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY are required")
         return self
 
     @property
