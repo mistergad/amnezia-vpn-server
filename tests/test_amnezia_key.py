@@ -31,6 +31,8 @@ RekeyTimeout = 3-7
 RejectAfterTime = 150-180
 KeepaliveTimeout = 5-15
 MaxHandshakeAttempts = 15-20
+RandomTrailers = on
+DisableCookies = on
 
 [Peer]
 PublicKey = server-public
@@ -69,9 +71,11 @@ def test_builds_guest_only_amnezia_vpn_key() -> None:
     container = envelope["containers"][0]  # type: ignore[index]
     assert container["container"] == "amnezia-awg2"
     awg = container["awg"]
-    assert awg["protocol_version"] == "3"
+    assert awg["protocol_version"] == "3.1"
     assert awg["HeaderProtectionKey"] == "header-protection-key"
     assert awg["ContentPaddingAddition"] == "10-100"
+    assert awg["RandomTrailers"] == "on"
+    assert awg["DisableCookies"] == "on"
     client = json.loads(awg["last_config"])
     assert "MTU = 1200" in client["config"]
     assert client["mtu"] == "1200"
@@ -79,3 +83,5 @@ def test_builds_guest_only_amnezia_vpn_key() -> None:
     assert client["client_priv_key"] == "client-private"
     assert client["I1"] == "<r 2><b 0x0102>"
     assert client["RekeyAfterTime"] == "100-120"
+    assert client["RandomTrailers"] == "on"
+    assert client["DisableCookies"] == "on"

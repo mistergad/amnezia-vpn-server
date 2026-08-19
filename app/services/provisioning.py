@@ -100,6 +100,8 @@ class MockProvisioner(Provisioner):
                 "RejectAfterTime": "150-180",
                 "KeepaliveTimeout": "5-15",
                 "MaxHandshakeAttempts": "15-20",
+                "RandomTrailers": "on",
+                "DisableCookies": "on",
             },
             server_public_key=server_key,
             preshared_key=psk,
@@ -124,7 +126,7 @@ class MockProvisioner(Provisioner):
 
 
 class NativeAmneziaWGProvisioner(Provisioner):
-    """Controls one AmneziaWG 3 interface using the official awg tools."""
+    """Controls one AmneziaWG 3.1 interface using the official awg tools."""
 
     COMMAND_TIMEOUT_SECONDS = 20
     SLOW_COMMAND_SECONDS = 2.0
@@ -134,7 +136,7 @@ class NativeAmneziaWGProvisioner(Provisioner):
         "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
         "HeaderProtectionKey", "ContentPaddingAddition", "RekeyAfterTime",
         "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout",
-        "MaxHandshakeAttempts",
+        "MaxHandshakeAttempts", "RandomTrailers", "DisableCookies",
     )
 
     REQUIRED_PARAMETER_NAMES = {
@@ -142,6 +144,7 @@ class NativeAmneziaWGProvisioner(Provisioner):
         "H1", "H2", "H3", "H4", "HeaderProtectionKey",
         "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
         "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts",
+        "RandomTrailers", "DisableCookies",
     }
 
     def __init__(self, settings: Settings):
@@ -207,7 +210,7 @@ class NativeAmneziaWGProvisioner(Provisioner):
         )
 
     def _server_metadata(self) -> tuple[str, dict[str, str]]:
-        """Cache AWG3 server values that stay constant until service restart."""
+        """Cache AWG 3.1 server values that stay constant until service restart."""
         if self._server_public_key is None:
             self._server_public_key = self._run(
                 ["show", self.settings.awg_interface, "public-key"]
@@ -246,7 +249,17 @@ class NativeAmneziaWGProvisioner(Provisioner):
                 sorted(self.REQUIRED_PARAMETER_NAMES - values.keys())
             )
             raise ProvisioningError(
-                f"Missing AmneziaWG 3 parameters in server config: {missing}"
+                f"Missing AmneziaWG 3.1 parameters in server config: {missing}"
+            )
+        disabled = [
+            name
+            for name in ("RandomTrailers", "DisableCookies")
+            if values[name].strip().casefold() not in {"on", "1", "true", "yes"}
+        ]
+        if disabled:
+            raise ProvisioningError(
+                "AmneziaWG 3.1 requires enabled parameters: "
+                + ", ".join(disabled)
             )
         return values
 
@@ -319,7 +332,7 @@ class NativeAmneziaWGProvisioner(Provisioner):
     def provision(self, assigned_ip: str) -> ProvisionedCredential:
         with self._operation_lock:
             private_key, public_key, preshared_key = self._generate_key_material()
-            # Validate AWG3 metadata before changing the live peer and cache it
+            # Validate AWG 3.1 metadata before changing the live peer and cache it
             # so subsequent keys avoid two more docker exec calls.
             server_public_key, obfuscation = self._server_metadata()
             self._run(

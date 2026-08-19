@@ -34,6 +34,8 @@ AWG_PARAMETER_NAMES = (
     "RejectAfterTime",
     "KeepaliveTimeout",
     "MaxHandshakeAttempts",
+    "RandomTrailers",
+    "DisableCookies",
 )
 
 
@@ -67,7 +69,7 @@ def build_amnezia_vpn_key(
     """Build a guest-only vpn:// key accepted by the AmneziaVPN client.
 
     The envelope intentionally contains no SSH user, password, or management
-    port. Its only credential is the already-issued AWG3 client configuration.
+    port. Its only credential is the already-issued AWG 3.1 client configuration.
     """
 
     config = ensure_client_mtu(config, settings.awg_mtu)
@@ -110,7 +112,7 @@ def build_amnezia_vpn_key(
     server_config: dict[str, object] = {
         "port": str(port),
         "transport_proto": "udp",
-        "protocol_version": "3",
+        "protocol_version": "3.1",
         "subnet_address": str(network.network_address),
         "subnet_cidr": str(network.prefixlen),
         **parameters,
@@ -127,7 +129,7 @@ def build_amnezia_vpn_key(
         "containers": [
             {
                 # AmneziaVPN keeps this historical container identifier for
-                # the userspace AWG implementation, including protocol v3.
+                # the userspace AWG implementation, including protocol v3.1.
                 "container": "amnezia-awg2",
                 "awg": server_config,
             }

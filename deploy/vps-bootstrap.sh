@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # One-command deployment for a dedicated Ubuntu 24.04 VPS.
-# The AWG3 container itself is built and configured by pinned upstream scripts
+# The AWG 3.1 container itself is built and configured by pinned upstream scripts
 # from amnezia-vpn/amnezia-client; see vendor/amnezia-client/UPSTREAM.md.
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,14 +14,15 @@ readonly ENV_FILE="/etc/amnezia-service.env"
 readonly CREDENTIALS_FILE="/root/amnezia-service-credentials.txt"
 readonly CADDY_DATA_DIR="/var/lib/caddy/.local/share/caddy"
 # AmneziaVPN retains this historical identifier for its userspace AWG backend,
-# including protocol version 3.
+# including protocol version 3.1.
 readonly CONTAINER_NAME="amnezia-awg2"
 readonly AWG_BUILD_DIR="/opt/amnezia/amnezia-awg2"
 readonly GENERATED_DIR="/opt/amnezia/deploy-generated"
 readonly AWG_SUBNET_IP="10.8.1.0"
 readonly AWG_SUBNET_CIDR="24"
 readonly AWG_SERVER_MTU="1200"
-readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.0.20260805@sha256:8447c91637c37536dd99b8bbd4420c819ac9f330f047804197291625bfb0ea8a"
+readonly AWG_RELEASE="3.1.20260812"
+readonly AWG_IMAGE="amneziavpn/amneziawg-go:3.1.20260812@sha256:c60cc651df4a2315d67dcd5411203fa1eb1beb4cb493aa6326cfaf8359d00434"
 
 DOMAIN="${DOMAIN:-}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
@@ -32,7 +33,7 @@ AWG_UPLOAD_LIMIT_MBIT="${AWG_UPLOAD_LIMIT_MBIT:-}"
 PUBLIC_INTERFACE="${PUBLIC_INTERFACE:-eth0}"
 IP_TLS_MODE="${IP_TLS_MODE:-public}"
 HOST_IS_IP=false
-RESET_FOR_AWG3=false
+RESET_FOR_AWG31=false
 
 log() { printf '\n==> %s\n' "$*"; }
 warn() { printf '\nWARNING: %s\n' "$*" >&2; }
@@ -52,17 +53,18 @@ Options:
   --ip IPV4                    Alias for --host when no domain is available
   --admin-email EMAIL          Initial administrator (default: derived from HOST)
   --admin-password PASSWORD    At least 12 safe ASCII characters; generated if omitted
-  --awg-port PORT              Public AWG3 UDP port (default: 55424)
+  --awg-port PORT              Public AWG 3.1 UDP port (default: 55424)
   --download-limit-mbps RATE   Per-device download limit (default: 10)
   --upload-limit-mbps RATE     Per-device upload limit (default: 8)
   --ip-tls-mode MODE           TLS for an IPv4 host: public or internal (default: public)
-  --reset-for-awg3             DELETE every account/key and rebuild the VPN as AWG3
+  --reset-for-awg31            DELETE every account/key and rebuild as AWG 3.1
+  --reset-for-awg3             Deprecated alias for --reset-for-awg31
   -h, --help                   Show this help
 
 The script targets a dedicated Ubuntu 24.04 server. It installs Docker,
-PostgreSQL, Caddy, AWG3 and the control panel. Re-running it is supported.
-The destructive --reset-for-awg3 option is intended for a one-time migration
-from AWG2 and must not be used during later routine updates.
+PostgreSQL, Caddy, AWG 3.1 and the control panel. Re-running it is supported.
+The destructive --reset-for-awg31 option is intended for a one-time migration
+from AWG 2/3.0 and must not be used during later routine updates.
 For a public IPv4, Caddy obtains and renews a publicly trusted short-lived
 Let's Encrypt certificate. Use --ip-tls-mode internal only as a fallback.
 EOF
@@ -78,7 +80,7 @@ while (($#)); do
     --download-limit-mbps) AWG_DOWNLOAD_LIMIT_MBIT="${2:-}"; shift 2 ;;
     --upload-limit-mbps) AWG_UPLOAD_LIMIT_MBIT="${2:-}"; shift 2 ;;
     --ip-tls-mode) IP_TLS_MODE="${2:-}"; shift 2 ;;
-    --reset-for-awg3) RESET_FOR_AWG3=true; shift ;;
+    --reset-for-awg31|--reset-for-awg3) RESET_FOR_AWG31=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
@@ -225,8 +227,8 @@ fi
 apt-get update
 apt-get install -y caddy
 
-if [[ "$RESET_FOR_AWG3" == true ]]; then
-  log "Destructive AWG3 reset: deleting every account, key and old VPN peer"
+if [[ "$RESET_FOR_AWG31" == true ]]; then
+  log "Destructive AWG 3.1 reset: deleting every account, key and old VPN peer"
   systemctl stop amnezia-service 2>/dev/null || true
   if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
     docker rm --force "$CONTAINER_NAME" >/dev/null
@@ -273,6 +275,8 @@ generate_awg_parameters() {
   REJECT_AFTER_TIME="150-180"
   KEEPALIVE_TIMEOUT="5-15"
   MAX_HANDSHAKE_ATTEMPTS="15-20"
+  RANDOM_TRAILERS="on"
+  DISABLE_COOKIES="on"
 }
 
 wait_for_awg() {
@@ -306,25 +310,30 @@ resume_app_service() {
 trap resume_app_service EXIT
 
 report_awg_failure() {
-  warn "AWG3 container state:"
+  warn "AWG 3.1 container state:"
   docker inspect --format \
     'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}} restarts={{.RestartCount}}' \
     "$CONTAINER_NAME" >&2 || true
-  warn "Last AWG3 container log lines:"
+  warn "Last AWG 3.1 container log lines:"
   docker logs --tail 200 "$CONTAINER_NAME" >&2 || true
 }
 
-verify_awg3() {
-  local config parameter
+verify_awg31() {
+  local config parameter tools_version
+  tools_version="$(docker exec "$CONTAINER_NAME" awg --version)" || return 1
+  grep -Fq "$AWG_RELEASE" <<< "$tools_version" || return 1
   config="$(docker exec "$CONTAINER_NAME" awg showconf awg0)" || return 1
   for parameter in HeaderProtectionKey ContentPaddingAddition RekeyAfterTime \
-    RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts; do
+    RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts \
+    RandomTrailers DisableCookies; do
     grep -Eq "^[[:space:]]*${parameter}[[:space:]]*=" <<< "$config" || return 1
   done
+  grep -Eiq '^[[:space:]]*RandomTrailers[[:space:]]*=[[:space:]]*(on|1|true)[[:space:]]*$' <<< "$config" || return 1
+  grep -Eiq '^[[:space:]]*DisableCookies[[:space:]]*=[[:space:]]*(on|1|true)[[:space:]]*$' <<< "$config" || return 1
 }
 
 install_awg_traffic_control() {
-  log "Configuring AWG3 server MTU $AWG_SERVER_MTU and per-device limits (${AWG_DOWNLOAD_LIMIT_MBIT} Mbit/s down, ${AWG_UPLOAD_LIMIT_MBIT} Mbit/s up)"
+  log "Configuring AWG 3.1 server MTU $AWG_SERVER_MTU and per-device limits (${AWG_DOWNLOAD_LIMIT_MBIT} Mbit/s down, ${AWG_UPLOAD_LIMIT_MBIT} Mbit/s up)"
   install -d -m 0755 "$GENERATED_DIR"
   if ! docker exec "$CONTAINER_NAME" sh -lc 'command -v tc >/dev/null 2>&1'; then
     docker exec "$CONTAINER_NAME" apk add --no-cache iproute2
@@ -347,16 +356,16 @@ install_awg_traffic_control() {
 }
 
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-  log "Reusing the existing AWG3 container without replacing its peers"
+  log "Reusing the existing AWG 3.1 container without replacing its peers"
   docker start "$CONTAINER_NAME" >/dev/null || true
   if ! wait_for_awg; then
     report_awg_failure
     die "Existing $CONTAINER_NAME does not expose a working awg0 interface."
   fi
-  verify_awg3 || die "The existing container is not AWG3. Re-run once with --reset-for-awg3 to delete all accounts and keys and rebuild it."
+  verify_awg31 || die "The existing container is not AWG 3.1. Re-run once with --reset-for-awg31 to delete all accounts and keys and rebuild it."
   detected_port="$(docker exec "$CONTAINER_NAME" awg show awg0 listen-port | tr -d '\r\n')"
   if [[ "$detected_port" =~ ^[0-9]+$ && "$detected_port" != "$AWG_PORT" ]]; then
-    warn "Existing AWG3 listens on UDP $detected_port; using it instead of $AWG_PORT."
+    warn "Existing AWG 3.1 listens on UDP $detected_port; using it instead of $AWG_PORT."
     AWG_PORT="$detected_port"
   fi
   pause_app_service
@@ -366,7 +375,7 @@ if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
     "$AWG_DOWNLOAD_LIMIT_MBIT" "$AWG_UPLOAD_LIMIT_MBIT"
   resume_app_service
 else
-  log "Building AWG3 with pinned official AmneziaVPN server scripts and image $AWG_IMAGE"
+  log "Building AWG 3.1 with pinned official AmneziaVPN server scripts and image $AWG_IMAGE"
   generate_awg_parameters
   install -d -m 0755 "$AWG_BUILD_DIR" "$GENERATED_DIR"
   VENDORED_BASE_IMAGE="$(head -n 1 "$VENDOR_DIR/awg2/Dockerfile" | tr -d '\r')"
@@ -384,13 +393,13 @@ else
   bash "$VENDOR_DIR/prepare_host.sh"
   bash "$VENDOR_DIR/build_container.sh"
   if ! docker run --rm --entrypoint /bin/sh "$CONTAINER_NAME" -ec \
-      "grep -a -q HeaderProtectionKey /usr/bin/awg && \
-       grep -a -q header_protection_key /usr/bin/amneziawg-go"; then
-    die "The pinned image does not contain matching AWG3 backend and tools binaries."
+      "grep -a -q RandomTrailers /usr/bin/awg && \
+       grep -a -q random_trailers /usr/bin/amneziawg-go"; then
+    die "The pinned image does not contain matching AWG 3.1 backend and tools binaries."
   fi
   bash "$VENDOR_DIR/awg2/run_container.sh"
   HEADER_PROTECTION_KEY="$(docker exec "$CONTAINER_NAME" awg genkey | tr -d '\r\n')"
-  [[ -n "$HEADER_PROTECTION_KEY" ]] || die "Cannot generate the AWG3 header protection key."
+  [[ -n "$HEADER_PROTECTION_KEY" ]] || die "Cannot generate the AWG 3.1 header protection key."
 
   export AWG_SUBNET_IP AWG_SUBNET_CIDR AWG_PORT
   export WIREGUARD_SUBNET_CIDR="$AWG_SUBNET_CIDR"
@@ -402,8 +411,9 @@ else
   export UNDERLOAD_PACKET_MAGIC_HEADER TRANSPORT_PACKET_MAGIC_HEADER
   export HEADER_PROTECTION_KEY CONTENT_PADDING_ADDITION REKEY_AFTER_TIME
   export REKEY_TIMEOUT REJECT_AFTER_TIME KEEPALIVE_TIMEOUT MAX_HANDSHAKE_ATTEMPTS
+  export RANDOM_TRAILERS DISABLE_COOKIES
 
-  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_SERVER_PORT} ${JUNK_PACKET_COUNT} ${JUNK_PACKET_MIN_SIZE} ${JUNK_PACKET_MAX_SIZE} ${INIT_PACKET_JUNK_SIZE} ${RESPONSE_PACKET_JUNK_SIZE} ${COOKIE_REPLY_PACKET_JUNK_SIZE} ${TRANSPORT_PACKET_JUNK_SIZE} ${INIT_PACKET_MAGIC_HEADER} ${RESPONSE_PACKET_MAGIC_HEADER} ${UNDERLOAD_PACKET_MAGIC_HEADER} ${TRANSPORT_PACKET_MAGIC_HEADER} ${HEADER_PROTECTION_KEY} ${CONTENT_PADDING_ADDITION} ${REKEY_AFTER_TIME} ${REKEY_TIMEOUT} ${REJECT_AFTER_TIME} ${KEEPALIVE_TIMEOUT} ${MAX_HANDSHAKE_ATTEMPTS}' \
+  envsubst '${AWG_SUBNET_IP} ${WIREGUARD_SUBNET_CIDR} ${AWG_SERVER_PORT} ${JUNK_PACKET_COUNT} ${JUNK_PACKET_MIN_SIZE} ${JUNK_PACKET_MAX_SIZE} ${INIT_PACKET_JUNK_SIZE} ${RESPONSE_PACKET_JUNK_SIZE} ${COOKIE_REPLY_PACKET_JUNK_SIZE} ${TRANSPORT_PACKET_JUNK_SIZE} ${INIT_PACKET_MAGIC_HEADER} ${RESPONSE_PACKET_MAGIC_HEADER} ${UNDERLOAD_PACKET_MAGIC_HEADER} ${TRANSPORT_PACKET_MAGIC_HEADER} ${HEADER_PROTECTION_KEY} ${CONTENT_PADDING_ADDITION} ${REKEY_AFTER_TIME} ${REKEY_TIMEOUT} ${REJECT_AFTER_TIME} ${KEEPALIVE_TIMEOUT} ${MAX_HANDSHAKE_ATTEMPTS} ${RANDOM_TRAILERS} ${DISABLE_COOKIES}' \
     < "$VENDOR_DIR/awg2/configure_container.sh" \
     > "$GENERATED_DIR/configure_container.sh"
   chmod 0755 "$GENERATED_DIR/configure_container.sh"
@@ -419,16 +429,16 @@ else
   docker restart "$CONTAINER_NAME" >/dev/null
   if ! wait_for_awg; then
     report_awg_failure
-    die "AWG3 failed to start; see the container diagnostics above."
+    die "AWG 3.1 failed to start; see the container diagnostics above."
   fi
-  verify_awg3 || die "AWG3 parameters are missing after startup; inspect: docker logs $CONTAINER_NAME"
+  verify_awg31 || die "AWG 3.1 parameters are missing after startup; inspect: docker logs $CONTAINER_NAME"
 fi
 
 DOCKER_BIN="$(command -v docker)"
 AWG_BIN="$(docker exec "$CONTAINER_NAME" sh -lc 'command -v awg' | tr -d '\r\n')"
 AWG_QUICK_BIN="$(docker exec "$CONTAINER_NAME" sh -lc 'command -v awg-quick' | tr -d '\r\n')"
 [[ -n "$DOCKER_BIN" && -n "$AWG_BIN" && -n "$AWG_QUICK_BIN" ]] || \
-  die "Cannot determine Docker/AWG3 binary paths."
+  die "Cannot determine Docker/AWG 3.1 binary paths."
 
 read_live_interface_value() {
   local name="$1"
@@ -446,7 +456,7 @@ log "Preparing PostgreSQL and application secrets"
 DB_PASSWORD="$(read_env_value DEPLOY_DB_PASSWORD)"
 SECRET_KEY="$(read_env_value SECRET_KEY)"
 ENCRYPTION_KEY="$(read_env_value ENCRYPTION_KEY)"
-if [[ "$RESET_FOR_AWG3" == true ]]; then
+if [[ "$RESET_FOR_AWG31" == true ]]; then
   # Invalidate every pre-reset browser session and encryption context.
   SECRET_KEY=""
   ENCRYPTION_KEY=""
@@ -604,7 +614,7 @@ if ufw status 2>/dev/null | grep -q '^Status: active'; then
   ufw allow "${SSH_PORT:-22}/tcp" comment 'SSH' >/dev/null
   ufw allow 80/tcp comment 'Caddy HTTP' >/dev/null
   ufw allow 443/tcp comment 'Caddy HTTPS' >/dev/null
-  ufw allow "$AWG_PORT/udp" comment 'AmneziaWG3' >/dev/null
+  ufw allow "$AWG_PORT/udp" comment 'AmneziaWG31' >/dev/null
 else
   warn "UFW is inactive; it was not enabled automatically. Open TCP 80/443 and UDP $AWG_PORT in the VPS firewall/security group."
 fi
@@ -645,7 +655,7 @@ cat > "$CREDENTIALS_FILE" <<EOF
 URL: https://$DOMAIN/admin
 Admin email: $ADMIN_EMAIL
 Admin password: $ADMIN_PASSWORD
-AWG3 endpoint: $DOMAIN:$AWG_PORT/udp
+AWG 3.1 endpoint: $DOMAIN:$AWG_PORT/udp
 Environment: $ENV_FILE
 EOF
 if [[ "$HOST_IS_IP" == true && "$IP_TLS_MODE" == "internal" ]]; then
@@ -673,5 +683,5 @@ fi
 log "Deployment completed"
 printf 'Admin:       https://%s/admin\n' "$DOMAIN"
 printf 'Credentials: %s (root-only)\n' "$CREDENTIALS_FILE"
-printf 'AWG3:        %s:%s/udp\n' "$DOMAIN" "$AWG_PORT"
+printf 'AWG 3.1:    %s:%s/udp\n' "$DOMAIN" "$AWG_PORT"
 printf 'Status:      systemctl status amnezia-service caddy\n'

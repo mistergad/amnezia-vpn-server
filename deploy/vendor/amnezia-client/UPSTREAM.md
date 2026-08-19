@@ -12,11 +12,13 @@ commit `dcf53b989e684a2e3e3f7f5c090001fb2def73b9`:
 
 They are licensed by their upstream authors under GPL-3.0; see `LICENSE`. The
 project-owned `deploy/vps-bootstrap.sh` wrapper renders and runs these pinned
-scripts and pins the upstream image to `amneziavpn/amneziawg-go:3.0.20260805`
-and its OCI index digest
-`sha256:8447c91637c37536dd99b8bbd4420c819ac9f330f047804197291625bfb0ea8a`,
+scripts. The `RandomTrailers` and `DisableCookies` additions in
+`awg2/configure_container.sh` are synchronized with upstream commit
+`b1a37b3779644b9daad1179d40a74f2231beec99`. The wrapper pins the official
+image to `amneziavpn/amneziawg-go:3.1.20260812` and its OCI index digest
+`sha256:c60cc651df4a2315d67dcd5411203fa1eb1beb4cb493aa6326cfaf8359d00434`,
 so a future upstream change cannot silently alter a server deployment. The
-bootstrap also checks that both `awg` and `amneziawg-go` contain their AWG3
+bootstrap also checks that both `awg` and `amneziawg-go` contain their AWG 3.1
 configuration symbols before creating the VPN container.
 
 `awg2/run_container.sh` has one operational hardening change: upstream's

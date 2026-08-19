@@ -24,6 +24,8 @@ def test_mock_provisioner_issues_importable_config() -> None:
     assert "Jc = 4" in issued.config
     assert "HeaderProtectionKey = " in issued.config
     assert "ContentPaddingAddition = 10-100" in issued.config
+    assert "RandomTrailers = on" in issued.config
+    assert "DisableCookies = on" in issued.config
     assert "PersistentKeepalive = 25-35" in issued.config
     assert "[Peer]" in issued.config
     assert "Endpoint = 203.0.113.4:51820" in issued.config
@@ -77,6 +79,8 @@ RekeyTimeout = 3-7
 RejectAfterTime = 150-180
 KeepaliveTimeout = 5-15
 MaxHandshakeAttempts = 15-20
+RandomTrailers = on
+DisableCookies = on
 """
             return ""
 
@@ -98,6 +102,8 @@ MaxHandshakeAttempts = 15-20
     assert "Jmin = 40" in issued.config
     assert "I1 = <r 2><b 0x0102>" in issued.config
     assert "HeaderProtectionKey = header-protection-key" in issued.config
+    assert "RandomTrailers = on" in issued.config
+    assert "DisableCookies = on" in issued.config
     assert "PersistentKeepalive = 25-35" in issued.config
     assert "PublicKey = server-public" in issued.config
     set_call = next(call for call in provisioner.calls if call[0][:1] == ["set"])
@@ -114,7 +120,7 @@ MaxHandshakeAttempts = 15-20
         for call in provisioner.calls
     )
 
-    # The AWG3 header-protection and timing parameters are static for the
+    # The AWG 3.1 obfuscation parameters are static for the
     # interface and are reused instead of fetching them for every new key.
     second = provisioner.provision("10.8.1.10")
     assert "HeaderProtectionKey = header-protection-key" in second.config
@@ -181,7 +187,40 @@ H4 = 4
     provisioner = LegacyProvisioner(
         Settings(awg_config_path=tmp_path / "not-mounted.conf")
     )
-    with pytest.raises(ProvisioningError, match="Missing AmneziaWG 3 parameters"):
+    with pytest.raises(ProvisioningError, match="Missing AmneziaWG 3.1 parameters"):
+        provisioner._interface_settings()
+
+
+def test_native_provisioner_rejects_disabled_awg31_features(tmp_path) -> None:
+    class DisabledAwg31Provisioner(NativeAmneziaWGProvisioner):
+        def _run(self, args, *, input_text=None, binary=None):  # type: ignore[no-untyped-def]
+            return """[Interface]
+Jc = 4
+Jmin = 10
+Jmax = 50
+S1 = 20
+S2 = 30
+S3 = 40
+S4 = 12
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+HeaderProtectionKey = header-protection-key
+ContentPaddingAddition = 10-100
+RekeyAfterTime = 100-120
+RekeyTimeout = 3-7
+RejectAfterTime = 150-180
+KeepaliveTimeout = 5-15
+MaxHandshakeAttempts = 15-20
+RandomTrailers = off
+DisableCookies = on
+"""
+
+    provisioner = DisabledAwg31Provisioner(
+        Settings(awg_config_path=tmp_path / "not-mounted.conf")
+    )
+    with pytest.raises(ProvisioningError, match="requires enabled parameters: RandomTrailers"):
         provisioner._interface_settings()
 
 
