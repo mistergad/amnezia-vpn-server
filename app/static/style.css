@@ -10,10 +10,11 @@ a { color: inherit; text-decoration: none; }
 button, input { font: inherit; }
 .noise { position: fixed; inset: 0; pointer-events: none; opacity: .025; z-index: 20; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 .shell { width: min(1180px, calc(100% - 40px)); margin-inline: auto; }
-.nav { height: 82px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
-.nav nav { display: flex; gap: 24px; align-items: center; font-size: 14px; }
-.brand { display: inline-flex; align-items: center; gap: 11px; font-weight: 750; letter-spacing: -.02em; }
-.brand-mark { display: grid; place-items: center; width: 32px; height: 32px; color: #07110a; background: var(--green); border-radius: 9px; font-weight: 900; }
+.nav { height: 82px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); }
+.nav nav { display: flex; flex-shrink: 0; gap: 24px; align-items: center; font-size: 14px; white-space: nowrap; }
+.brand { min-width: 0; display: inline-flex; align-items: center; gap: 11px; font-weight: 750; letter-spacing: -.02em; }
+.brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand-mark { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; color: #07110a; background: var(--green); border-radius: 9px; font-weight: 900; }
 .inline { display: inline; margin: 0; }
 .link-button { border: 0; color: inherit; background: none; padding: 0; cursor: pointer; }
 .button, .ghost-button, .danger-button, .icon-button { border: 0; border-radius: 12px; display: inline-flex; justify-content: center; align-items: center; cursor: pointer; font-weight: 700; transition: .2s ease; }
@@ -172,7 +173,7 @@ td small { display: block; margin-top: 4px; }
   .renew-actions { width: 100%; flex-direction: column; } .renew-actions form, .renew-actions button { width: 100%; }
 }
 @media (max-width: 540px) {
-  .shell { width: min(100% - 24px, 1180px); } .nav { height: 68px; } .nav nav { gap: 12px; } .nav nav > a:first-of-type { display: none; }
+  .shell { width: min(100% - 24px, 1180px); } .nav { height: 68px; gap: 10px; } .nav nav { gap: 12px; }
   .hero h1 { font-size: 57px; } .hero-actions { flex-direction: column; } .trust-row { gap: 12px; flex-direction: column; }
   .dashboard-head { align-items: flex-start; flex-direction: column; gap: 20px; } .dashboard-head h1 { font-size: 48px; }
   .device-actions { flex-wrap: wrap; } .footer { flex-direction: column; gap: 7px; }
