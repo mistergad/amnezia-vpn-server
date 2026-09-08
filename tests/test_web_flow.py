@@ -10,7 +10,7 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import CredentialStatus, Payment, Subscription, User, VpnCredential
 from app.models import SubscriptionStatus, utcnow
-from app.services.lifecycle import balance_kopecks, reconcile_expired, refresh_peer_stats
+from app.services.lifecycle import as_utc, balance_kopecks, reconcile_expired, refresh_peer_stats
 
 
 def csrf(html: str) -> str:
@@ -224,6 +224,46 @@ def test_admin_can_open_client_api() -> None:
             assert client_data["balance_kopecks"] >= 0
             assert client_data["download_rate_bps"] >= 0
             assert client_data["upload_rate_bps"] >= 0
+
+
+def test_dashboard_navigation_does_not_write_billing_state() -> None:
+    email = "read-only-dashboard@example.com"
+    with TestClient(app) as client:
+        register_page = client.get("/register")
+        registered = client.post(
+            "/register",
+            data={
+                "email": email,
+                "password": "very-secure-password",
+                "csrf_token": csrf(register_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert registered.status_code == 303
+
+        manage_customer_as_admin(client, email=email, amount_rubles=100)
+
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == email))
+            subscription = db.scalar(
+                select(Subscription).where(Subscription.user_id == user.id)
+            )
+            assert user and subscription
+            original_balance = user.balance_units
+            original_billed_at = utcnow() - timedelta(minutes=5)
+            subscription.last_billed_at = original_billed_at
+            db.commit()
+            subscription_id = subscription.id
+
+        client.cookies.clear()
+        login_as(client, email, "very-secure-password")
+        assert client.get("/app").status_code == 200
+
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == email))
+            subscription = db.get(Subscription, subscription_id)
+            assert user and user.balance_units == original_balance
+            assert subscription and as_utc(subscription.last_billed_at) == original_billed_at
 
 
 def test_admin_can_edit_balance_and_add_device() -> None:

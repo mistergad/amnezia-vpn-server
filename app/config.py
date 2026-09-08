@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     secret_key: str = "dev-only-change-me-please"
     encryption_key: str | None = None
     database_url: str = "sqlite:///./amnezia-service.db"
+    database_pool_size: int = Field(default=10, ge=1, le=50)
+    database_max_overflow: int = Field(default=10, ge=0, le=100)
+    database_pool_timeout_seconds: int = Field(default=5, ge=1, le=60)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
 
     admin_email: str = "admin@example.com"

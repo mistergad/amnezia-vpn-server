@@ -35,7 +35,6 @@ from app.services.lifecycle import (
     restore_suspended_credentials,
     revoke_credential,
     set_customer_balance,
-    settle_subscription,
 )
 
 
@@ -164,8 +163,9 @@ def _client_summary(user: User) -> dict[str, object]:
 
 @router.get("/", response_class=HTMLResponse)
 def home(request: Request, db: Db) -> Response:
-    if _user(request, db):
-        return RedirectResponse("/admin" if _user(request, db).role == UserRole.ADMIN else "/app", 303)
+    user = _user(request, db)
+    if user:
+        return RedirectResponse("/admin" if user.role == UserRole.ADMIN else "/app", 303)
     return _render(request, "home.html", db, price_per_device=100)
 
 
@@ -242,14 +242,19 @@ def customer_dashboard(request: Request, db: Db) -> Response:
         db.scalars(
             select(Subscription)
             .where(Subscription.user_id == user.id)
-            .options(selectinload(Subscription.credentials), selectinload(Subscription.user))
+            .options(
+                selectinload(
+                    Subscription.credentials.and_(
+                        VpnCredential.status.in_(
+                            [CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED]
+                        )
+                    )
+                ),
+                selectinload(Subscription.user),
+            )
             .order_by(desc(Subscription.created_at))
         )
     )
-    for subscription in subscriptions:
-        if subscription.status == SubscriptionStatus.ACTIVE:
-            settle_subscription(db, subscription)
-    db.commit()
     resumable_subscription = next(
         (item for item in subscriptions if item.status == SubscriptionStatus.ACTIVE),
         next(
@@ -405,15 +410,17 @@ def admin_dashboard(request: Request, db: Db) -> Response:
         db.scalars(
             select(User)
             .where(User.role == UserRole.CUSTOMER)
-            .options(selectinload(User.subscriptions), selectinload(User.credentials))
+            .options(
+                selectinload(User.subscriptions),
+                selectinload(
+                    User.credentials.and_(
+                        VpnCredential.status == CredentialStatus.ACTIVE
+                    )
+                ),
+            )
             .order_by(desc(User.created_at))
         )
     )
-    for customer in customers:
-        for subscription in customer.subscriptions:
-            if subscription.status == SubscriptionStatus.ACTIVE:
-                settle_subscription(db, subscription)
-    db.commit()
     return _render(
         request,
         "admin.html",
@@ -433,10 +440,6 @@ def admin_client(request: Request, db: Db, user_id: str) -> Response:
     )
     if not customer:
         raise HTTPException(404, detail="Клиент не найден")
-    for subscription in customer.subscriptions:
-        if subscription.status == SubscriptionStatus.ACTIVE:
-            settle_subscription(db, subscription)
-    db.commit()
     return _render(
         request,
         "admin_client.html",
@@ -579,7 +582,12 @@ def admin_clients_api(request: Request, db: Db) -> JSONResponse:
     customers = db.scalars(
         select(User)
         .where(User.role == UserRole.CUSTOMER)
-        .options(selectinload(User.subscriptions), selectinload(User.credentials))
+        .options(
+            selectinload(User.subscriptions),
+            selectinload(
+                User.credentials.and_(VpnCredential.status == CredentialStatus.ACTIVE)
+            ),
+        )
         .order_by(desc(User.created_at))
     ).all()
     clients = [_client_summary(customer) for customer in customers]

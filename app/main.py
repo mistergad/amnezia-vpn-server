@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from typing import Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -26,24 +28,41 @@ from app.web import router
 
 
 ROOT = Path(__file__).resolve().parent
+logger = logging.getLogger(__name__)
+
+
+def _run_maintenance_job(name: str, job: Callable) -> None:
+    """Run one maintenance step with its own short-lived DB session."""
+    with SessionLocal() as db:
+        try:
+            job(db)
+        except Exception:
+            db.rollback()
+            logger.exception("Background maintenance step %s failed", name)
 
 
 async def _reconciler(app: FastAPI) -> None:
     interval = app.state.settings.subscription_reconcile_seconds
     while True:
         await asyncio.sleep(interval)
-        with SessionLocal() as db:
-            try:
-                await asyncio.to_thread(
-                    reconcile_suspended,
-                    db,
-                    app.state.settings,
-                    app.state.provisioner,
-                )
-                await asyncio.to_thread(refresh_peer_stats, db, app.state.provisioner)
-                await asyncio.to_thread(reconcile_expired, db, app.state.provisioner)
-            except Exception:
-                db.rollback()
+        jobs = (
+            (
+                "restore-suspended",
+                lambda db: reconcile_suspended(
+                    db, app.state.settings, app.state.provisioner
+                ),
+            ),
+            (
+                "refresh-peer-stats",
+                lambda db: refresh_peer_stats(db, app.state.provisioner),
+            ),
+            (
+                "reconcile-expired",
+                lambda db: reconcile_expired(db, app.state.provisioner),
+            ),
+        )
+        for name, job in jobs:
+            await asyncio.to_thread(_run_maintenance_job, name, job)
 
 
 @asynccontextmanager
