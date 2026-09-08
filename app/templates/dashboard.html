@@ -30,7 +30,7 @@
     <span class="muted">Текущий расход</span><strong>0 ₽</strong><p>VPN пока не активирован</p>
   </article>
   <article class="balance-detail">
-    <span class="muted">Первый запуск</span><strong>от 100 ₽</strong><p>ключ появится после оплаты</p>
+    <span class="muted">Первый запуск</span><strong>Через администратора</strong><p>администратор назначит баланс и выпустит ключ</p>
   </article>
   {% endif %}
 </section>
@@ -39,24 +39,19 @@
 <section class="shell empty-state balance-start">
   <div>
     <span class="eyebrow">{{ 'Возобновить VPN' if suspended_devices else 'Запустить VPN' }}</span>
-    <h2>Пополните баланс</h2>
+    <h2>{{ 'Баланс закончился' if suspended_devices else 'Ожидается активация' }}</h2>
     {% if suspended_devices %}
-      <p>После оплаты прежние ключи ({{ suspended_devices }} шт.) снова заработают автоматически. Повторный импорт не потребуется.</p>
+      <p>После пополнения администратором прежние ключи ({{ suspended_devices }} шт.) снова заработают автоматически. Повторный импорт не потребуется.</p>
     {% else %}
-      <p>Первый ключ появится автоматически. Каждый следующий активный ключ увеличит расход еще на 100 ₽ за 30 дней.</p>
+      <p>Администратор назначит баланс и выпустит первый ключ. Каждый следующий активный ключ увеличит расход еще на 100 ₽ за 30 дней.</p>
     {% endif %}
   </div>
-  <form class="balance-form" method="post" action="/balance/topup" data-balance-calculator data-device-count="{{ suspended_devices or 1 }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Сумма пополнения, ₽
-      <input type="number" name="amount_rubles" min="100" max="100000" step="100" value="300" required>
-    </label>
+  <div class="balance-form">
     <div class="forecast">
-      <span>{{ 'Для прежних устройств' if suspended_devices else 'Для первого устройства' }}</span>
-      <strong data-forecast>{{ (90 / (suspended_devices or 1))|round(1) }} дней</strong>
+      <span>Управление балансом</span>
+      <strong>Обратитесь к администратору</strong>
     </div>
-    <button class="button full" type="submit">{{ 'Пополнить и возобновить' if suspended_devices else 'Пополнить и запустить' }}</button>
-  </form>
+  </div>
 </section>
 {% endif %}
 
@@ -99,7 +94,7 @@
       <h3>{{ item.label }}</h3>
       <p class="mono">{{ item.assigned_ip }}</p>
       <div class="device-stats"><span>↓ {{ format_bytes(item.rx_bytes) }}</span><span>↑ {{ format_bytes(item.tx_bytes) }}</span></div>
-      <p class="muted">Сервис повторит подключение ключа автоматически.</p>
+      <p class="muted">Ключ восстановится после пополнения баланса администратором.</p>
     </article>
     {% endfor %}
     {% if active_credentials|length + suspended_credentials|length < max_devices %}
@@ -117,29 +112,11 @@
 
 {% if active %}
 <section class="shell renew-block balance-topup">
-  <div><span class="eyebrow">Баланс</span><h2>Пополнить счет</h2><p class="muted">Расход определяется числом активных устройств.</p></div>
-  <form class="balance-form horizontal no-device-field" method="post" action="/balance/topup" data-balance-calculator data-device-count="{{ [active[0].device_limit, 1]|max }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Сумма, ₽<input type="number" name="amount_rubles" min="100" max="100000" step="100" value="300" required></label>
-    <div class="forecast"><span>Добавится примерно</span><strong data-forecast>—</strong></div>
-    <button class="button" type="submit">Пополнить</button>
-  </form>
+  <div><span class="eyebrow">Баланс</span><h2>Управляется администратором</h2><p class="muted">Клиенты не могут самостоятельно пополнять счет. Расход определяется числом активных устройств.</p></div>
 </section>
 {% endif %}
 
 <script>
-document.querySelectorAll('[data-balance-calculator]').forEach(function (form) {
-  const amount = form.querySelector('[name="amount_rubles"]');
-  const devices = Math.max(1, Number(form.dataset.deviceCount || 1));
-  const output = form.querySelector('[data-forecast]');
-  function updateForecast() {
-    const days = Math.max(0, Number(amount.value)) / 100 * 30 / devices;
-    output.textContent = (days >= 1 ? days.toFixed(days < 10 ? 1 : 0) + ' дней' : Math.round(days * 24) + ' часов');
-  }
-  amount.addEventListener('input', updateForecast);
-  updateForecast();
-});
-
 document.querySelectorAll('[data-copy-key-url]').forEach(function (button) {
   button.addEventListener('click', async function () {
     const original = button.textContent;

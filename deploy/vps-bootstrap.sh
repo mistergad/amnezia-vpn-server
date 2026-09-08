@@ -364,15 +364,6 @@ DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
 SECRET_KEY="${SECRET_KEY:-$(openssl rand -hex 32)}"
 ENCRYPTION_KEY="${ENCRYPTION_KEY:-$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)}"
-PAYMENT_PROVIDER_VALUE="$(read_env_value PAYMENT_PROVIDER)"
-YOOKASSA_SHOP_ID_VALUE="$(read_env_value YOOKASSA_SHOP_ID)"
-YOOKASSA_SECRET_KEY_VALUE="$(read_env_value YOOKASSA_SECRET_KEY)"
-PAYMENT_PROVIDER_VALUE="${PAYMENT_PROVIDER_VALUE:-mock}"
-if [[ "$PAYMENT_PROVIDER_VALUE" == "yookassa" ]] && \
-   [[ -z "$YOOKASSA_SHOP_ID_VALUE" || -z "$YOOKASSA_SECRET_KEY_VALUE" ]]; then
-  die "Existing YooKassa configuration is incomplete in $ENV_FILE."
-fi
-
 if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='amnezia'" | grep -q 1; then
   runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
     -c "CREATE ROLE amnezia LOGIN PASSWORD '$DB_PASSWORD'"
@@ -411,9 +402,6 @@ TRUSTED_HOSTS=["$DOMAIN","localhost","127.0.0.1"]
 ADMIN_EMAIL=$ADMIN_EMAIL
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 SESSION_HTTPS_ONLY=true
-PAYMENT_PROVIDER=$PAYMENT_PROVIDER_VALUE
-YOOKASSA_SHOP_ID=$YOOKASSA_SHOP_ID_VALUE
-YOOKASSA_SECRET_KEY=$YOOKASSA_SECRET_KEY_VALUE
 VPN_BACKEND=native
 AWG_INTERFACE=awg0
 AWG_ENDPOINT=$DOMAIN:$AWG_PORT

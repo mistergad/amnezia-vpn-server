@@ -21,7 +21,6 @@ from app.services.lifecycle import (
     refresh_peer_stats,
     seed_data,
 )
-from app.services.payments import PaymentProviderError, build_payment_provider
 from app.services.provisioning import ProvisioningError, build_provisioner
 from app.web import router
 
@@ -65,7 +64,6 @@ def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.provisioner = build_provisioner(settings)
-    app.state.payment_provider = build_payment_provider(settings)
     app.state.templates = Jinja2Templates(
         env=Environment(
             loader=FileSystemLoader(ROOT / "templates"),
@@ -84,7 +82,6 @@ def create_app() -> FastAPI:
     app.include_router(router)
 
     @app.exception_handler(BusinessRuleError)
-    @app.exception_handler(PaymentProviderError)
     @app.exception_handler(ProvisioningError)
     async def service_error(_: Request, exc: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=409)
