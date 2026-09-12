@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "awg2-traffic-limit.sh"
+CHECK_SCRIPT = ROOT / "deploy" / "check-user-traffic-limits.sh"
 
 
 def test_root_qdisc_is_recreated_when_its_kind_changes() -> None:
@@ -28,3 +29,14 @@ def test_tc_mutations_are_serialized() -> None:
     assert "acquire_lock()" in script
     assert "trap release_lock EXIT" in script
     assert "acquire_lock\n" in script
+
+
+def test_user_limit_inspector_queries_devices_and_both_tc_directions() -> None:
+    script = CHECK_SCRIPT.read_text(encoding="utf-8")
+
+    assert "lower(:'email')" in script
+    assert "vc.revoked_at IS NULL" in script
+    assert 'parent 1: protocol ip pref "$minor"' in script
+    assert 'classid "1:$class_minor"' in script
+    assert 'parent ffff: protocol ip pref "$minor"' in script
+    assert 'AWG_SUBNET="$(read_env_value AWG_SUBNET)"' in script
